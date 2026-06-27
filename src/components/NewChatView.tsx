@@ -1,9 +1,13 @@
-import { Input } from 'tdesign-react';
-import { FolderOpenIcon } from 'tdesign-icons-react';
 import { Bot } from 'lucide-react';
 import { APP_CONFIG } from '../config';
 import { Model, Agent, PermissionMode } from '../types';
 import { ICON_MAP } from '../utils/iconMap';
+
+interface WelcomeInfo {
+  title: string;
+  desc: string;
+  suggestions: string[];
+}
 
 interface NewChatViewProps {
   agents: Agent[];
@@ -16,49 +20,90 @@ interface NewChatViewProps {
   onSelectAgent: (agentId: string) => void;
   onSetCwd: (cwd: string) => void;
   onSetPermissionMode: (mode: PermissionMode) => void;
+  /** 锁定 Agent：隐藏 Agent 选择网格，展示模块欢迎语 + 引导提示 */
+  lockedAgent?: Agent;
+  welcome?: WelcomeInfo;
+  /** 点击引导提示时填入输入框 */
+  onPickSuggestion?: (text: string) => void;
 }
 
 export function NewChatView({
   agents,
   newChatAgentId,
-  newChatCwd,
   onSelectAgent,
-  onSetCwd,
   onSetPermissionMode,
+  lockedAgent,
+  welcome,
+  onPickSuggestion,
 }: NewChatViewProps) {
-  const selectedAgent = agents.find(a => a.id === newChatAgentId);
+  // ===== 锁定 Agent 模式（功能模块内置专属 Agent）=====
+  if (lockedAgent) {
+    const Icon = ICON_MAP[lockedAgent.icon || 'Bot'] || Bot;
+    return (
+      <div className="flex flex-col items-center justify-center h-full">
+        <div className="w-full max-w-2xl text-center">
+          <div
+            className="w-16 h-16 rounded-2xl flex items-center justify-center mb-5 shadow-lg mx-auto"
+            style={{
+              background: 'linear-gradient(135deg, var(--td-brand-color), var(--td-brand-color-hover))',
+            }}
+          >
+            <Icon size={30} color="white" />
+          </div>
+          <h2 className="text-2xl font-semibold mb-2" style={{ color: 'var(--td-text-color-primary)' }}>
+            {welcome?.title || lockedAgent.name}
+          </h2>
+          <p className="mb-8" style={{ color: 'var(--td-text-color-secondary)' }}>
+            {welcome?.desc || lockedAgent.description}
+          </p>
+
+          {welcome?.suggestions && welcome.suggestions.length > 0 && (
+            <div className="flex flex-wrap gap-2.5 justify-center mb-6">
+              {welcome.suggestions.map((s, i) => (
+                <div key={i} className="suggestion-chip" onClick={() => onPickSuggestion?.(s)}>
+                  {s}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <p className="text-xs" style={{ color: 'var(--td-text-color-placeholder)' }}>
+            模型和权限模式可在输入框下方切换
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ===== 通用模式（保留原有 Agent 选择网格）=====
+  const selectedAgent = agents.find((a) => a.id === newChatAgentId);
 
   return (
     <div className="flex flex-col items-center justify-center h-full">
       <div className="w-full max-w-lg">
         {/* Logo 和标题 */}
         <div className="text-center mb-8">
-          <div 
+          <div
             className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4 shadow-lg mx-auto"
-            style={{ 
-              background: 'linear-gradient(135deg, var(--td-brand-color), var(--td-brand-color-hover))'
+            style={{
+              background: 'linear-gradient(135deg, var(--td-brand-color), var(--td-brand-color-hover))',
             }}
           >
             <span className="text-3xl font-bold text-white">{APP_CONFIG.nameInitial}</span>
           </div>
-          <h2 
-            className="text-2xl font-semibold mb-2"
-            style={{ color: 'var(--td-text-color-primary)' }}
-          >
+          <h2 className="text-2xl font-semibold mb-2" style={{ color: 'var(--td-text-color-primary)' }}>
             {APP_CONFIG.name}
           </h2>
-          <p style={{ color: 'var(--td-text-color-secondary)' }}>
-            选择一个 Agent 开始对话
-          </p>
+          <p style={{ color: 'var(--td-text-color-secondary)' }}>选择一个 Agent 开始对话</p>
         </div>
-        
+
         {/* Agent 选择 */}
         <div className="mb-6">
           <label className="block text-sm font-medium mb-3" style={{ color: 'var(--td-text-color-primary)' }}>
             选择 Agent
           </label>
           <div className="grid grid-cols-2 gap-3 max-h-[280px] overflow-y-auto">
-            {agents.map(agent => {
+            {agents.map((agent) => {
               const AgentIcon = ICON_MAP[agent.icon || 'Bot'] || Bot;
               const isSelected = agent.id === newChatAgentId;
               return (
@@ -66,19 +111,18 @@ export function NewChatView({
                   key={agent.id}
                   className="p-3 rounded-xl cursor-pointer transition-all border-2"
                   style={{
-                    borderColor: isSelected ? (agent.color || 'var(--td-brand-color)') : 'transparent',
+                    borderColor: isSelected ? agent.color || 'var(--td-brand-color)' : 'transparent',
                     backgroundColor: isSelected ? 'var(--td-brand-color-light)' : 'var(--td-bg-color-component)',
                   }}
                   onClick={() => {
                     onSelectAgent(agent.id);
-                    // 自动应用 Agent 的默认权限模式
                     if (agent.permissionMode) {
                       onSetPermissionMode(agent.permissionMode);
                     }
                   }}
                 >
                   <div className="flex items-center gap-3">
-                    <div 
+                    <div
                       className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0"
                       style={{ backgroundColor: agent.color || '#0052d9' }}
                     >
@@ -101,34 +145,15 @@ export function NewChatView({
           </div>
         </div>
 
-        {/* 工作目录 */}
-        <div className="mb-6">
-          <label className="block text-sm font-medium mb-2" style={{ color: 'var(--td-text-color-primary)' }}>
-            工作目录 <span style={{ color: 'var(--td-text-color-placeholder)' }}>(可选)</span>
-          </label>
-          <Input
-            value={newChatCwd}
-            onChange={(v) => onSetCwd(v as string)}
-            placeholder="例如：/Users/username/projects/my-app"
-            prefixIcon={<FolderOpenIcon />}
-          />
-          <p className="text-xs mt-1.5" style={{ color: 'var(--td-text-color-placeholder)' }}>
-            指定 Agent 的工作目录，用于文件操作等
-          </p>
-        </div>
-
         {/* 选中的 Agent 预览 */}
         {selectedAgent && (
-          <div 
-            className="p-4 rounded-xl"
-            style={{ backgroundColor: 'var(--td-bg-color-component)' }}
-          >
+          <div className="p-4 rounded-xl" style={{ backgroundColor: 'var(--td-bg-color-component)' }}>
             <div className="flex items-center gap-2 mb-2">
               {(() => {
                 const Icon = ICON_MAP[selectedAgent.icon || 'Bot'] || Bot;
                 return (
                   <>
-                    <div 
+                    <div
                       className="w-6 h-6 rounded-md flex items-center justify-center"
                       style={{ backgroundColor: selectedAgent.color || '#0052d9' }}
                     >
@@ -146,7 +171,7 @@ export function NewChatView({
             </p>
           </div>
         )}
-        
+
         {/* 提示文字 */}
         <p className="text-center text-xs mt-6" style={{ color: 'var(--td-text-color-placeholder)' }}>
           模型和权限模式可在输入框下方切换

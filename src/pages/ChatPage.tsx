@@ -1,9 +1,20 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Model, Session, PermissionMode, CustomAgent, PermissionRequest } from '../types';
 import { NewChatView } from '../components/NewChatView';
 import { ChatMessages } from '../components/ChatMessages';
 import { ChatInput } from '../components/ChatInput';
+
+interface NewChatOptions {
+  agentId: string;
+  cwd: string;
+  permissionMode: PermissionMode;
+}
+
+interface WelcomeInfo {
+  title: string;
+  desc: string;
+  suggestions: string[];
+}
 
 interface ChatPageProps {
   currentSession: Session | undefined;
@@ -21,12 +32,12 @@ interface ChatPageProps {
   onPermissionAllow: () => void;
   onPermissionDeny: () => void;
   onPermissionModeChange: (mode: PermissionMode) => void;
-}
-
-interface NewChatOptions {
-  agentId: string;
-  cwd: string;
-  permissionMode: PermissionMode;
+  /** 锁定 Agent：新建会话固定使用该 Agent，不显示选择器 */
+  lockedAgent?: CustomAgent;
+  /** 锁定模式下的欢迎语与引导提示 */
+  welcome?: WelcomeInfo;
+  /** 新建会话后导航到的路径（由模块提供，例如 /assistant/:id） */
+  onAfterCreate?: (path: string) => void;
 }
 
 export function ChatPage({
@@ -45,12 +56,15 @@ export function ChatPage({
   onPermissionAllow,
   onPermissionDeny,
   onPermissionModeChange,
+  lockedAgent,
+  welcome,
+  onAfterCreate,
 }: ChatPageProps) {
-  const navigate = useNavigate();
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  
+
   // 新对话页面状态
-  const [newChatAgentId, setNewChatAgentId] = useState('default');
+  const defaultAgentId = lockedAgent?.id || 'default';
+  const [newChatAgentId, setNewChatAgentId] = useState(defaultAgentId);
   const [newChatCwd, setNewChatCwd] = useState('');
 
   // 自动滚动到底部
@@ -59,23 +73,28 @@ export function ChatPage({
   }, [currentSession?.messages]);
 
   // 处理发送消息
-  const handleSend = useCallback((message: string) => {
-    if (!currentSession) {
-      // 新对话
-      onSendMessage(message, {
-        agentId: newChatAgentId,
-        cwd: newChatCwd,
-        permissionMode: permissionMode,
-      }, (path) => {
-        // 重置新对话选项
-        setNewChatAgentId('default');
-        setNewChatCwd('');
-        navigate(path);
-      });
-    } else {
-      onSendMessage(message);
-    }
-  }, [currentSession, newChatAgentId, newChatCwd, permissionMode, onSendMessage, navigate]);
+  const handleSend = useCallback(
+    (message: string) => {
+      if (!currentSession) {
+        onSendMessage(
+          message,
+          {
+            agentId: lockedAgent?.id || newChatAgentId,
+            cwd: newChatCwd,
+            permissionMode: permissionMode,
+          },
+          (path) => {
+            if (!lockedAgent) setNewChatAgentId('default');
+            setNewChatCwd('');
+            onAfterCreate?.(path);
+          }
+        );
+      } else {
+        onSendMessage(message);
+      }
+    },
+    [currentSession, lockedAgent, newChatAgentId, newChatCwd, permissionMode, onSendMessage, onAfterCreate]
+  );
 
   const showNewChatView = !currentSession || currentSession.messages.length === 0;
 
@@ -95,6 +114,9 @@ export function ChatPage({
             onSelectAgent={setNewChatAgentId}
             onSetCwd={setNewChatCwd}
             onSetPermissionMode={onPermissionModeChange}
+            lockedAgent={lockedAgent}
+            welcome={welcome}
+            onPickSuggestion={onInputChange}
           />
         ) : (
           <ChatMessages

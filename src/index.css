@@ -15,7 +15,7 @@
   --color-input: 250 250 250;
   --color-card: 250 250 250;
   --color-card-foreground: 23 23 23;
-  --color-accent: 59 130 246;
+  --color-accent: 79 70 229;
   --color-accent-foreground: 255 255 255;
 }
 
@@ -31,7 +31,7 @@
   --color-input: 38 38 38;
   --color-card: 28 28 28;
   --color-card-foreground: 250 250 250;
-  --color-accent: 96 165 250;
+  --color-accent: 129 140 248;
   --color-accent-foreground: 23 23 23;
 }
 
@@ -79,11 +79,12 @@ body {
 
 /* ===== TDesign 全局 CSS 变量覆盖 ===== */
 :root {
-  /* 品牌色 */
-  --td-brand-color: #3b82f6;
-  --td-brand-color-hover: #60a5fa;
-  --td-brand-color-active: #2563eb;
-  --td-brand-color-light: rgba(59, 130, 246, 0.1);
+  /* 品牌色 - 靛蓝（教育风） */
+  --td-brand-color: #4f46e5;
+  --td-brand-color-hover: #6366f1;
+  --td-brand-color-active: #4338ca;
+  --td-brand-color-light: rgba(79, 70, 229, 0.1);
+  --td-brand-color-focus: rgba(79, 70, 229, 0.2);
   
   /* 背景色 - 浅色模式 */
   --td-bg-color-page: #ffffff;
@@ -128,11 +129,12 @@ body {
 
 /* 深色模式 TDesign 变量 */
 .dark {
-  /* 品牌色 */
-  --td-brand-color: #60a5fa;
-  --td-brand-color-hover: #93c5fd;
-  --td-brand-color-active: #3b82f6;
-  --td-brand-color-light: rgba(96, 165, 250, 0.15);
+  /* 品牌色 - 靛蓝（深色加亮） */
+  --td-brand-color: #818cf8;
+  --td-brand-color-hover: #a5b4fc;
+  --td-brand-color-active: #6366f1;
+  --td-brand-color-light: rgba(129, 140, 248, 0.16);
+  --td-brand-color-focus: rgba(129, 140, 248, 0.28);
   
   /* 背景色 - 深色模式 */
   --td-bg-color-page: #121212;
@@ -594,13 +596,90 @@ t-chat-sender::part(send-btn):disabled,
 /* 内联权限卡片呼吸效果 */
 @keyframes permission-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.2);
+    box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.2);
   }
   50% {
-    box-shadow: 0 0 0 8px rgba(59, 130, 246, 0);
+    box-shadow: 0 0 0 8px rgba(79, 70, 229, 0);
   }
 }
 
 .permission-card-pulse {
   animation: permission-pulse 2s ease-in-out infinite;
+}
+
+/* ===== 后台外壳：侧栏菜单 ===== */
+.side-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--td-text-color-secondary);
+  transition: background-color 0.18s ease, color 0.18s ease;
+  user-select: none;
+}
+
+.side-menu-item:hover {
+  background-color: var(--td-bg-color-component-hover);
+  color: var(--td-text-color-primary);
+}
+
+.side-menu-item.is-active {
+  background-color: var(--td-brand-color-light);
+  color: var(--td-brand-color);
+  font-weight: 600;
+}
+
+.side-menu-item.is-active .side-menu-icon {
+  color: var(--td-brand-color);
+}
+
+.side-menu-group-title {
+  padding: 0 12px;
+  margin: 14px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--td-text-color-placeholder);
+}
+
+/* ===== 后台外壳：内容卡片 ===== */
+.admin-card {
+  background-color: var(--td-bg-color-container);
+  border: 1px solid var(--td-component-stroke);
+  border-radius: var(--td-radius-large);
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+
+.admin-card.is-clickable {
+  cursor: pointer;
+}
+
+.admin-card.is-clickable:hover {
+  box-shadow: var(--td-shadow-2);
+  transform: translateY(-2px);
+  border-color: var(--td-brand-color);
+}
+
+/* 引导提示气泡 */
+.suggestion-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid var(--td-component-stroke);
+  background-color: var(--td-bg-color-component);
+  color: var(--td-text-color-secondary);
+  transition: all 0.18s ease;
+}
+
+.suggestion-chip:hover {
+  border-color: var(--td-brand-color);
+  color: var(--td-brand-color);
+  background-color: var(--td-brand-color-light);
 }

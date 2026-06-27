@@ -1,10 +1,16 @@
-import { 
-  Bot, 
-  Code, 
+import {
+  Bot,
+  Code,
   Globe,
   Sparkles,
   FileText,
-  Lightbulb
+  Lightbulb,
+  LayoutDashboard,
+  Settings,
+  BookOpen,
+  ClipboardList,
+  GraduationCap,
+  Library,
 } from 'lucide-react';
 
 // Icon 映射
@@ -15,4 +21,12 @@ export const ICON_MAP: Record<string, React.ComponentType<{ size?: number; color
   FileText,
   Globe,
   Lightbulb,
+  // 菜单 / 模块图标
+  LayoutDashboard,
+  Setting: Settings,
+  Settings,
+  BookOpen,
+  ClipboardList,
+  GraduationCap,
+  Library,
 };

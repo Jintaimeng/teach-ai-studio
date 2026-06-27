@@ -17,6 +17,8 @@ interface UseChatOptions {
   updateSessionModel: (sessionId: string, modelId: string) => void;
   setCurrentSessionId: (id: string | null) => void;
   setSessions: React.Dispatch<React.SetStateAction<Session[]>>;
+  /** 新建会话后导航路径前缀（默认 /assistant），用于 onNavigate 回调 */
+  routeBase?: string;
 }
 
 interface NewChatOptions {
@@ -34,6 +36,7 @@ export function useChat(options: UseChatOptions) {
     updateSessionModel,
     setCurrentSessionId,
     setSessions,
+    routeBase = '/assistant',
   } = options;
 
   const [isLoading, setIsLoading] = useState(false);
@@ -90,7 +93,7 @@ export function useChat(options: UseChatOptions) {
       
       updateSessionModel(newSession.id, selectedModel);
       
-      onNavigate?.(`/chat/${newSession.id}`);
+      onNavigate?.(`${routeBase}/${newSession.id}`);
     }
 
     const tempUserMessageId = uuidv4();
@@ -404,7 +407,7 @@ export function useChat(options: UseChatOptions) {
       }
       setIsLoading(false);
     }
-  }, [currentSession, currentSessionId, selectedModel, getAgent, updateSessionModel, setCurrentSessionId, setSessions, isLoading]);
+  }, [currentSession, currentSessionId, selectedModel, getAgent, updateSessionModel, setCurrentSessionId, setSessions, isLoading, routeBase]);
 
   // 处理停止事件
   const handleStop = useCallback(() => {

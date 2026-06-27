@@ -5,14 +5,14 @@
 
 export const APP_CONFIG = {
   /** 应用名称 */
-  name: 'Web Agent',
-  
+  name: '超级教师工作台',
+
   /** 应用名称首字母（用于 Logo） */
-  nameInitial: 'W',
-  
+  nameInitial: '超',
+
   /** 应用描述 */
-  description: '选择一个模型，开始对话',
-  
+  description: 'AI 驱动的智能教学工作台',
+
   /** 版本号 */
   version: '1.0.0',
 };
