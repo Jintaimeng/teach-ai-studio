@@ -1338,51 +1338,84 @@ const RECOMMEND_PARSE_PROMPT = `你是考研志愿推荐的需求解析器。请
 }
 只返回上述 JSON 对象。`;
 
-async function parseNlToQuery(message: string): Promise<ParsedQuery> {
-  const model = process.env.RECOMMEND_MODEL || defaultModel;
-  const stream = query({
-    prompt: message,
-    options: {
-      cwd: process.cwd(),
-      model,
-      maxTurns: 1,
-      permissionMode: "bypassPermissions",
-      includePartialMessages: false,
-      systemPrompt: RECOMMEND_PARSE_PROMPT,
-      env: getSdkEnv(),
-      stderr: (data: string) => console.log(`[Recommend parse stderr] ${data.trim()}`),
+// 兜底：当 LLM 解析失败/缺字段时，用正则从原文抽取关键信息，保证推荐不因解析异常而中断
+const PROVINCE_KEYWORDS = [
+  "北京", "天津", "上海", "重庆", "河北", "山西", "辽宁", "吉林", "黑龙江", "江苏",
+  "浙江", "安徽", "福建", "江西", "山东", "河南", "湖北", "湖南", "广东", "广西",
+  "海南", "四川", "贵州", "云南", "陕西", "甘肃", "青海", "内蒙古", "宁夏", "新疆", "西藏",
+];
+
+function heuristicParse(message: string): Partial<ParsedQuery> {
+  const out: Partial<ParsedQuery> = {};
+  // 分数：取 200~500 之间的第一个数字
+  const nums = message.match(/\d{2,3}/g) || [];
+  for (const n of nums) {
+    const v = Number(n);
+    if (v >= 200 && v <= 500) {
+      out.score = v;
+      break;
+    }
+  }
+  // 层次
+  if (/双一流/.test(message)) out.level = "双一流";
+  else if (/985/.test(message)) out.level = "985";
+  else if (/211/.test(message)) out.level = "211";
+  // 地区
+  const prov = PROVINCE_KEYWORDS.find((p) => message.includes(p));
+  if (prov) out.provinceName = prov;
+  return out;
+}
+
+// 调用豆包（火山方舟 Ark，OpenAI 兼容接口）做需求解析。
+// 模糊需求解析对质量要求不高、但对延迟敏感，默认用 lite 类小模型加速。
+async function callDoubao(systemPrompt: string, userMessage: string): Promise<string> {
+  const baseUrl = (process.env.DOUBAO_BASE_URL || "https://ark.cn-beijing.volces.com/api/v3").replace(/\/$/, "");
+  const apiKey = process.env.DOUBAO_API_KEY;
+  const model = process.env.RECOMMEND_MODEL || "doubao-1-5-lite-32k-250115";
+  if (!apiKey) throw new Error("未配置 DOUBAO_API_KEY");
+
+  const resp = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
     },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userMessage },
+      ],
+      temperature: 0,
+    }),
   });
 
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`Doubao API ${resp.status}: ${errText.slice(0, 200)}`);
+  }
+  const data: any = await resp.json();
+  return data?.choices?.[0]?.message?.content || "";
+}
+
+async function parseNlToQuery(message: string): Promise<ParsedQuery> {
   let text = "";
   try {
-    for await (const msg of stream) {
-      if (msg.type === "assistant") {
-        const content = (msg as any).message?.content;
-        if (typeof content === "string") {
-          text += content;
-        } else if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === "text") text += block.text;
-          }
-        }
-      } else if ((msg as any).type === "result") {
-        const r = (msg as any).result;
-        if (typeof r === "string" && r.trim()) text = r;
-        break;
-      }
-    }
-  } finally {
-    await stream.interrupt().catch(() => undefined);
+    text = await callDoubao(RECOMMEND_PARSE_PROMPT, message);
+  } catch (e: any) {
+    // LLM 解析失败（如接口报错 / 网络异常）不应使整个请求失败，转用正则兜底
+    console.warn(`[Recommend] LLM 解析失败，转用正则兜底: ${e?.message || e}`);
   }
 
   const parsed = extractJson(text) || {};
-  const score = typeof parsed.score === "number" ? parsed.score : Number(parsed.score) || null;
+  const fb = heuristicParse(message);
+  const llmScore = typeof parsed.score === "number" ? parsed.score : Number(parsed.score) || null;
+  const score = llmScore ?? fb.score ?? null;
   return {
     score,
-    subjectName: parsed.subjectName || undefined,
-    provinceName: parsed.provinceName || undefined,
-    level: parsed.level || null,
+    subjectName: parsed.subjectName || fb.subjectName || undefined,
+    provinceName: parsed.provinceName || fb.provinceName || undefined,
+    level: parsed.level || fb.level || null,
     targetSchoolName: parsed.targetSchoolName || undefined,
     year: typeof parsed.year === "number" ? parsed.year : null,
     band: defaultBand(score),
@@ -1490,7 +1523,7 @@ async function runRecommendation(pq: ParsedQuery) {
       maxLowestScore: pq.band.firstMax,
       sortBy: "lowestScore",
       sortOrder: "desc",
-      pageSize: 12,
+      pageSize: 30,
     }),
     querySchoolScore({
       ...common,
@@ -1498,7 +1531,7 @@ async function runRecommendation(pq: ParsedQuery) {
       maxAdjustedLowestScore: pq.band.adjustMax,
       sortBy: "adjustedLowestScore",
       sortOrder: "desc",
-      pageSize: 8,
+      pageSize: 12,
     }),
   ]);
 

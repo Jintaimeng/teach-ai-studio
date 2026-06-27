@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Textarea, MessagePlugin, Dialog, Input } from 'tdesign-react';
+import { Button, Textarea, MessagePlugin } from 'tdesign-react';
 import { FilterDelta, ParsedQuery, RecommendResult as RecommendResultType } from '../types';
 import { RecommendResult } from '../components/RecommendResult';
 import { VoiceInputButton } from '../components/VoiceInputButton';
@@ -29,11 +29,8 @@ export function RecommendPage() {
   const [busy, setBusy] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
-  // 收藏弹窗
-  const [favOpen, setFavOpen] = useState(false);
-  const [favTitle, setFavTitle] = useState('');
-  const [favNote, setFavNote] = useState('');
-  const favTurnRef = useRef<Turn | null>(null);
+  // 已收藏的轮次（按钮态）
+  const [favoritedIds, setFavoritedIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -88,36 +85,31 @@ export function RecommendPage() {
     [busy, callRecommend]
   );
 
-  const openFavorite = useCallback((turn: Turn) => {
-    favTurnRef.current = turn;
-    setFavTitle(summarize(turn.result?.parsedQuery));
-    setFavNote('');
-    setFavOpen(true);
-  }, []);
-
-  const confirmFavorite = useCallback(async () => {
-    const turn = favTurnRef.current;
-    if (!turn?.result) return;
-    try {
-      const res = await fetch('/api/cases', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: favTitle || summarize(turn.result.parsedQuery),
-          candidateSummary: summarize(turn.result.parsedQuery),
-          query: turn.result.parsedQuery,
-          result: turn.result,
-          note: favNote,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || '收藏失败');
-      MessagePlugin.success('已收藏到案例库');
-      setFavOpen(false);
-    } catch (e: any) {
-      MessagePlugin.error(e?.message || '收藏失败');
-    }
-  }, [favTitle, favNote]);
+  const handleFavorite = useCallback(
+    async (turn: Turn) => {
+      if (!turn.result || favoritedIds.has(turn.id)) return;
+      try {
+        const res = await fetch('/api/cases', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: summarize(turn.result.parsedQuery),
+            candidateSummary: summarize(turn.result.parsedQuery),
+            query: turn.result.parsedQuery,
+            result: turn.result,
+            note: '',
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || '收藏失败');
+        setFavoritedIds((prev) => new Set(prev).add(turn.id));
+        MessagePlugin.success('已收藏到案例库');
+      } catch (e: any) {
+        MessagePlugin.error(e?.message || '收藏失败');
+      }
+    },
+    [favoritedIds]
+  );
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -182,8 +174,9 @@ export function RecommendPage() {
                 <RecommendResult
                   result={turn.result}
                   busy={busy}
+                  favorited={favoritedIds.has(turn.id)}
                   onQuickFilter={(delta) => handleQuickFilter(turn.result!, delta)}
-                  onFavorite={() => openFavorite(turn)}
+                  onFavorite={() => handleFavorite(turn)}
                 />
               )}
             </div>
@@ -216,31 +209,6 @@ export function RecommendPage() {
           </Button>
         </div>
       </div>
-
-      {/* 收藏弹窗 */}
-      <Dialog
-        visible={favOpen}
-        header="收藏为案例"
-        onClose={() => setFavOpen(false)}
-        onConfirm={confirmFavorite}
-        confirmBtn="收藏"
-        cancelBtn="取消"
-      >
-        <div className="space-y-3">
-          <div>
-            <label className="block text-sm mb-1" style={{ color: 'var(--td-text-color-primary)' }}>
-              案例标题
-            </label>
-            <Input value={favTitle} onChange={(v) => setFavTitle(v as string)} placeholder="案例标题" />
-          </div>
-          <div>
-            <label className="block text-sm mb-1" style={{ color: 'var(--td-text-color-primary)' }}>
-              备注（可选）
-            </label>
-            <Textarea value={favNote} onChange={(v) => setFavNote(v as string)} placeholder="备注说明" autosize={{ minRows: 2, maxRows: 4 }} />
-          </div>
-        </div>
-      </Dialog>
     </div>
   );
 }
