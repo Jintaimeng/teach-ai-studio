@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "yanbot": {
+      "url": "https://api.yanbot.tech/mcp"
+    },
+    "local-agent-test": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/niuyi/WorkBuddy/2026-06-25-11-57-40/local-agent-app/mcp/test-mcp-server.js"
+      ]
+    },
+    "math-tools-test": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/niuyi/WorkBuddy/2026-06-25-11-57-40/local-agent-app/mcp/math-tools-mcp-server.js"
+      ]
+    }
+  }
+}
