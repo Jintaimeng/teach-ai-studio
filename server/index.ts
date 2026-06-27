@@ -9,6 +9,13 @@ import fs from "fs";
 import { exec } from "child_process";
 import { promisify } from "util";
 import * as db from "./db.js";
+import {
+  querySchoolScore,
+  getYears,
+  isYanbotConfigured,
+  YanbotApiError,
+  type SchoolScoreRecord,
+} from "./yanbotClient.js";
 
 const execAsync = promisify(exec);
 
@@ -1244,6 +1251,384 @@ app.post("/api/chat", async (req, res) => {
       streamClosed = true;
       res.end();
     }
+  }
+});
+
+// ============= 志愿推荐 API =============
+
+interface ScoreBand {
+  firstMin: number;
+  firstMax: number;
+  adjustMax: number;
+}
+
+interface ParsedQuery {
+  score: number | null;
+  subjectName?: string;
+  provinceName?: string;
+  level?: string | null;
+  targetSchoolName?: string;
+  year?: number | null;
+  band: ScoreBand;
+  note?: string;
+}
+
+interface FilterDelta {
+  firstMinDelta?: number;
+  firstMaxDelta?: number;
+  adjustMaxDelta?: number;
+  level?: string | null;
+}
+
+interface SchoolCard {
+  schoolName: string;
+  schoolCode: string;
+  level?: string;
+  provinceName?: string;
+  subjectName: string;
+  subjectCode: string;
+  college?: string;
+  year: number;
+  lowestScore?: number;
+  averageScore?: number;
+  highestScore?: number;
+  admissions?: number;
+  applicants?: number | string;
+  remarks?: string;
+  scoreDiff?: number;
+  tier?: "冲" | "稳" | "保";
+  is985?: boolean;
+  is211?: boolean;
+  isDualClass?: boolean;
+}
+
+let cachedLatestYear: number | null = null;
+
+function defaultBand(score: number | null): ScoreBand {
+  const s = typeof score === "number" && score > 0 ? score : 330;
+  return { firstMin: s - 20, firstMax: s + 10, adjustMax: s + 5 };
+}
+
+function extractJson(text: string): any {
+  if (!text) return null;
+  // 优先解析 ```json ... ``` 或第一个 {...}
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const candidate = fenced ? fenced[1] : text;
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  try {
+    return JSON.parse(candidate.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+const RECOMMEND_PARSE_PROMPT = `你是考研志愿推荐的需求解析器。请把老师的自然语言需求解析为 JSON，仅输出 JSON，不要任何多余文字、解释或 markdown。
+
+输出字段：
+{
+  "score": 数字或 null,            // 考生预估总分（考研初试总分，通常 250-450）
+  "subjectName": 字符串或省略,      // 报考专业名称关键词（如 "计算机" "法律"）
+  "provinceName": 字符串或省略,     // 目标地区/省份（如 "江苏" "北京"）
+  "level": "双一流"|"211"|"985"|null, // 院校层次要求，无则 null
+  "targetSchoolName": 字符串或省略, // 明确点名的目标院校
+  "year": 数字或 null,             // 指定年份，未提及为 null
+  "note": 字符串或省略             // 对需求的一句话归纳
+}
+只返回上述 JSON 对象。`;
+
+async function parseNlToQuery(message: string): Promise<ParsedQuery> {
+  const model = process.env.RECOMMEND_MODEL || defaultModel;
+  const stream = query({
+    prompt: message,
+    options: {
+      cwd: process.cwd(),
+      model,
+      maxTurns: 1,
+      permissionMode: "bypassPermissions",
+      includePartialMessages: false,
+      systemPrompt: RECOMMEND_PARSE_PROMPT,
+      env: getSdkEnv(),
+      stderr: (data: string) => console.log(`[Recommend parse stderr] ${data.trim()}`),
+    },
+  });
+
+  let text = "";
+  try {
+    for await (const msg of stream) {
+      if (msg.type === "assistant") {
+        const content = (msg as any).message?.content;
+        if (typeof content === "string") {
+          text += content;
+        } else if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === "text") text += block.text;
+          }
+        }
+      } else if ((msg as any).type === "result") {
+        const r = (msg as any).result;
+        if (typeof r === "string" && r.trim()) text = r;
+        break;
+      }
+    }
+  } finally {
+    await stream.interrupt().catch(() => undefined);
+  }
+
+  const parsed = extractJson(text) || {};
+  const score = typeof parsed.score === "number" ? parsed.score : Number(parsed.score) || null;
+  return {
+    score,
+    subjectName: parsed.subjectName || undefined,
+    provinceName: parsed.provinceName || undefined,
+    level: parsed.level || null,
+    targetSchoolName: parsed.targetSchoolName || undefined,
+    year: typeof parsed.year === "number" ? parsed.year : null,
+    band: defaultBand(score),
+    note: parsed.note || undefined,
+  };
+}
+
+async function resolveYear(year: number | null | undefined): Promise<number | undefined> {
+  if (year) return year;
+  if (cachedLatestYear) return cachedLatestYear;
+  try {
+    const years = await getYears();
+    if (years.length > 0) {
+      cachedLatestYear = years[0];
+      return cachedLatestYear;
+    }
+  } catch (e) {
+    console.warn("[Recommend] 获取最新年份失败，忽略 year 过滤");
+  }
+  return undefined;
+}
+
+function schoolTags(record: SchoolScoreRecord): { is985: boolean; is211: boolean; isDualClass: boolean } {
+  const s = record.school;
+  const level = (record.level || s?.level || "").toString();
+  return {
+    is985: Boolean(s?.is985) || /985/.test(level),
+    is211: Boolean(s?.is211) || /211/.test(level),
+    isDualClass: Boolean(s?.isDual_class) || /双一流/.test(level),
+  };
+}
+
+function tierForDiff(diff: number): "冲" | "稳" | "保" {
+  if (diff < 0) return "冲";
+  if (diff <= 10) return "稳";
+  return "保";
+}
+
+function toFirstChoiceCard(r: SchoolScoreRecord, score: number | null): SchoolCard {
+  const tags = schoolTags(r);
+  const diff = typeof score === "number" && typeof r.lowestScore === "number" ? score - r.lowestScore : undefined;
+  return {
+    schoolName: r.schoolName,
+    schoolCode: r.schoolCode,
+    level: r.level || r.school?.level,
+    provinceName: r.provinceName,
+    subjectName: r.subjectName,
+    subjectCode: r.subjectCode,
+    college: r.college,
+    year: r.year,
+    lowestScore: r.lowestScore,
+    averageScore: r.averageScore,
+    highestScore: r.highestScore,
+    admissions: r.firstChoiceAdmissions,
+    applicants: r.applicants,
+    remarks: r.remarks,
+    scoreDiff: diff,
+    tier: typeof diff === "number" ? tierForDiff(diff) : undefined,
+    ...tags,
+  };
+}
+
+function toAdjustedCard(r: SchoolScoreRecord, score: number | null): SchoolCard {
+  const tags = schoolTags(r);
+  const diff =
+    typeof score === "number" && typeof r.adjustedLowestScore === "number"
+      ? score - r.adjustedLowestScore
+      : undefined;
+  return {
+    schoolName: r.schoolName,
+    schoolCode: r.schoolCode,
+    level: r.level || r.school?.level,
+    provinceName: r.provinceName,
+    subjectName: r.subjectName,
+    subjectCode: r.subjectCode,
+    college: r.college,
+    year: r.year,
+    lowestScore: r.adjustedLowestScore,
+    averageScore: r.adjustedAverageScore,
+    highestScore: r.adjustedHighestScore,
+    admissions: r.adjustedAdmissions,
+    applicants: r.applicants,
+    remarks: r.adjustedRemarks,
+    scoreDiff: diff,
+    ...tags,
+  };
+}
+
+async function runRecommendation(pq: ParsedQuery) {
+  const year = await resolveYear(pq.year);
+  const common: Record<string, string | number | boolean | undefined> = {
+    subjectName: pq.subjectName,
+    provinceName: pq.provinceName,
+    level: pq.level || undefined,
+    schoolName: pq.targetSchoolName,
+    year,
+    includeSchool: true,
+  };
+
+  const [firstData, adjustData] = await Promise.all([
+    querySchoolScore({
+      ...common,
+      hasFirstChoice: true,
+      minLowestScore: pq.band.firstMin,
+      maxLowestScore: pq.band.firstMax,
+      sortBy: "lowestScore",
+      sortOrder: "desc",
+      pageSize: 12,
+    }),
+    querySchoolScore({
+      ...common,
+      hasAdjustment: true,
+      maxAdjustedLowestScore: pq.band.adjustMax,
+      sortBy: "adjustedLowestScore",
+      sortOrder: "desc",
+      pageSize: 8,
+    }),
+  ]);
+
+  const firstItems = (firstData.list || []).map((r) => toFirstChoiceCard(r, pq.score));
+  const adjustItems = (adjustData.list || []).map((r) => toAdjustedCard(r, pq.score));
+
+  return {
+    parsedQuery: { ...pq, year: year ?? pq.year ?? null },
+    groups: [
+      { category: "一志愿", items: firstItems },
+      { category: "调剂", items: adjustItems },
+    ],
+    note: pq.note,
+  };
+}
+
+// 推荐：自然语言解析 + 两路检索 + 归一化（或按快捷筛选增量重查）
+app.post("/api/recommend", async (req, res) => {
+  if (!isYanbotConfigured()) {
+    return res.status(500).json({
+      error: "未配置 yanbot 开放接口凭据，请在 .env 设置 OPEN_API_KEY 与 OPEN_API_SECRET 后重启服务",
+    });
+  }
+
+  const { message, prevQuery, filterDelta } = req.body as {
+    message?: string;
+    prevQuery?: ParsedQuery;
+    filterDelta?: FilterDelta;
+  };
+
+  try {
+    let pq: ParsedQuery;
+
+    if (prevQuery && filterDelta) {
+      // 快捷按钮重查：不经 LLM，合并筛选增量
+      const band: ScoreBand = {
+        firstMin: prevQuery.band.firstMin + (filterDelta.firstMinDelta || 0),
+        firstMax: prevQuery.band.firstMax + (filterDelta.firstMaxDelta || 0),
+        adjustMax: prevQuery.band.adjustMax + (filterDelta.adjustMaxDelta || 0),
+      };
+      pq = {
+        ...prevQuery,
+        band,
+        level: filterDelta.level !== undefined ? filterDelta.level : prevQuery.level,
+      };
+    } else {
+      if (!message || !message.trim()) {
+        return res.status(400).json({ error: "请输入考生信息与需求" });
+      }
+      console.log(`[Recommend] 解析需求: ${message.slice(0, 80)}`);
+      pq = await parseNlToQuery(message);
+    }
+
+    const result = await runRecommendation(pq);
+    res.json(result);
+  } catch (error: any) {
+    if (error instanceof YanbotApiError) {
+      console.error("[Recommend] yanbot 接口错误:", error.message);
+      return res.status(error.statusCode >= 400 ? error.statusCode : 502).json({ error: error.message });
+    }
+    console.error("[Recommend] 失败:", error);
+    res.status(500).json({ error: error?.message || "推荐失败" });
+  }
+});
+
+// ============= 案例收藏 API =============
+
+app.get("/api/cases", async (req, res) => {
+  try {
+    const rows = await db.getAllFavoriteCases();
+    const cases = rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      candidateSummary: r.candidate_summary,
+      note: r.note,
+      createdAt: r.created_at,
+    }));
+    res.json({ cases });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || "获取案例失败" });
+  }
+});
+
+app.get("/api/cases/:id", async (req, res) => {
+  try {
+    const row = await db.getFavoriteCase(req.params.id);
+    if (!row) return res.status(404).json({ error: "案例不存在" });
+    res.json({
+      id: row.id,
+      title: row.title,
+      candidateSummary: row.candidate_summary,
+      note: row.note,
+      createdAt: row.created_at,
+      query: JSON.parse(row.query_json),
+      result: JSON.parse(row.result_json),
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || "获取案例失败" });
+  }
+});
+
+app.post("/api/cases", async (req, res) => {
+  try {
+    const { title, candidateSummary, query: q, result, note } = req.body || {};
+    if (!q || !result) {
+      return res.status(400).json({ error: "缺少 query 或 result" });
+    }
+    const now = new Date().toISOString();
+    const item = {
+      id: uuidv4(),
+      title: (title && String(title).slice(0, 100)) || "未命名案例",
+      candidate_summary: candidateSummary ? String(candidateSummary).slice(0, 200) : null,
+      query_json: JSON.stringify(q),
+      result_json: JSON.stringify(result),
+      note: note ? String(note) : null,
+      created_at: now,
+    };
+    await db.createFavoriteCase(item);
+    res.json({ id: item.id, success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || "收藏失败" });
+  }
+});
+
+app.delete("/api/cases/:id", async (req, res) => {
+  try {
+    await db.deleteFavoriteCase(req.params.id);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || "删除失败" });
   }
 });
 
