@@ -9,6 +9,10 @@ import fs from "fs";
 import { exec } from "child_process";
 import { promisify } from "util";
 import * as db from "./db.js";
+import { ensureYanbotDb } from "./yanbot-db.js";
+import { generateVibeReport } from "./services/school-report.js";
+import { generateTiaojiReport } from "./services/tiaoji-report.js";
+import type { VibeReportInput } from "./services/report-types.js";
 
 const execAsync = promisify(exec);
 
@@ -1244,6 +1248,73 @@ app.post("/api/chat", async (req, res) => {
       streamClosed = true;
       res.end();
     }
+  }
+});
+
+// ============= 志愿填报报告 API（择校 / 调剂）=============
+
+/** 轻量手写校验（避免引入 zod），对应 yanbot 原 zod schema。 */
+function parseVibeInput(body: unknown): { ok: true; data: VibeReportInput } | { ok: false; message: string } {
+  if (!body || typeof body !== "object") return { ok: false, message: "invalid payload" };
+  const b = body as Record<string, unknown>;
+
+  const score = b.score;
+  if (typeof score !== "number" || !Number.isInteger(score) || score < 200 || score > 750) {
+    return { ok: false, message: "score 必须是 200-750 之间的整数" };
+  }
+
+  const subjectGroup = b.subjectGroup;
+  if (subjectGroup !== "physics" && subjectGroup !== "history") {
+    return { ok: false, message: "subjectGroup 必须是 physics 或 history" };
+  }
+
+  const toStringArray = (v: unknown): string[] | undefined => {
+    if (v == null) return undefined;
+    if (!Array.isArray(v)) return undefined;
+    const arr = v.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+    return arr.length ? arr : undefined;
+  };
+
+  return {
+    ok: true,
+    data: {
+      score,
+      subjectGroup,
+      majorKeywords: toStringArray(b.majorKeywords),
+      regionPrefs: toStringArray(b.regionPrefs),
+    },
+  };
+}
+
+// 择校报告（移植自 yanbot-claw）
+app.post("/api/tools/school-report/vibe", async (req, res) => {
+  const parsed = parseVibeInput(req.body);
+  if (!parsed.ok) {
+    return res.json({ code: 1, success: false, message: parsed.message });
+  }
+  try {
+    await ensureYanbotDb();
+    const data = generateVibeReport(parsed.data);
+    res.json({ code: 0, success: true, data });
+  } catch (err: any) {
+    console.error("[school-report/vibe]", err);
+    res.status(500).json({ code: 1, success: false, message: err?.message || "服务暂时不可用，请稍后重试" });
+  }
+});
+
+// 调剂报告（新建）
+app.post("/api/tools/tiaoji-report/vibe", async (req, res) => {
+  const parsed = parseVibeInput(req.body);
+  if (!parsed.ok) {
+    return res.json({ code: 1, success: false, message: parsed.message });
+  }
+  try {
+    await ensureYanbotDb();
+    const data = generateTiaojiReport(parsed.data);
+    res.json({ code: 0, success: true, data });
+  } catch (err: any) {
+    console.error("[tiaoji-report/vibe]", err);
+    res.status(500).json({ code: 1, success: false, message: err?.message || "服务暂时不可用，请稍后重试" });
   }
 });
 

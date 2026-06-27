@@ -25,6 +25,10 @@ export default {
           foreground: 'var(--td-text-color-anti)',
           light: 'var(--td-brand-color-light)',
         },
+        secondary: {
+          DEFAULT: 'var(--td-bg-color-component)',
+          foreground: 'var(--td-text-color-secondary)',
+        },
         primary: {
           DEFAULT: 'var(--td-text-color-primary)',
           foreground: 'var(--td-bg-color-page)',

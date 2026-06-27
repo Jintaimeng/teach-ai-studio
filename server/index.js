@@ -82,6 +82,9 @@ import fs from "fs";
 import { exec } from "child_process";
 import { promisify } from "util";
 import * as db from "./db.js";
+import { ensureYanbotDb } from "./yanbot-db.js";
+import { generateVibeReport } from "./services/school-report.js";
+import { generateTiaojiReport } from "./services/tiaoji-report.js";
 var execAsync = promisify(exec);
 var pendingPermissions = new Map();
 // 权限请求超时时间（5分钟）
@@ -1375,6 +1378,94 @@ app.post("/api/chat", function (req, res) { return __awaiter(void 0, void 0, voi
                 }
                 return [3 /*break*/, 30];
             case 30: return [2 /*return*/];
+        }
+    });
+}); });
+// ============= 志愿填报报告 API（择校 / 调剂）=============
+/** 轻量手写校验（避免引入 zod），对应 yanbot 原 zod schema。 */
+function parseVibeInput(body) {
+    if (!body || typeof body !== "object")
+        return { ok: false, message: "invalid payload" };
+    var b = body;
+    var score = b.score;
+    if (typeof score !== "number" || !Number.isInteger(score) || score < 200 || score > 750) {
+        return { ok: false, message: "score 必须是 200-750 之间的整数" };
+    }
+    var subjectGroup = b.subjectGroup;
+    if (subjectGroup !== "physics" && subjectGroup !== "history") {
+        return { ok: false, message: "subjectGroup 必须是 physics 或 history" };
+    }
+    var toStringArray = function (v) {
+        if (v == null)
+            return undefined;
+        if (!Array.isArray(v))
+            return undefined;
+        var arr = v.filter(function (x) { return typeof x === "string" && x.trim().length > 0; });
+        return arr.length ? arr : undefined;
+    };
+    return {
+        ok: true,
+        data: {
+            score: score,
+            subjectGroup: subjectGroup,
+            majorKeywords: toStringArray(b.majorKeywords),
+            regionPrefs: toStringArray(b.regionPrefs),
+        },
+    };
+}
+// 择校报告（移植自 yanbot-claw）
+app.post("/api/tools/school-report/vibe", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var parsed, data, err_1;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                parsed = parseVibeInput(req.body);
+                if (!parsed.ok) {
+                    return [2 /*return*/, res.json({ code: 1, success: false, message: parsed.message })];
+                }
+                _a.label = 1;
+            case 1:
+                _a.trys.push([1, 3, , 4]);
+                return [4 /*yield*/, ensureYanbotDb()];
+            case 2:
+                _a.sent();
+                data = generateVibeReport(parsed.data);
+                res.json({ code: 0, success: true, data: data });
+                return [3 /*break*/, 4];
+            case 3:
+                err_1 = _a.sent();
+                console.error("[school-report/vibe]", err_1);
+                res.status(500).json({ code: 1, success: false, message: (err_1 === null || err_1 === void 0 ? void 0 : err_1.message) || "服务暂时不可用，请稍后重试" });
+                return [3 /*break*/, 4];
+            case 4: return [2 /*return*/];
+        }
+    });
+}); });
+// 调剂报告（新建）
+app.post("/api/tools/tiaoji-report/vibe", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var parsed, data, err_2;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                parsed = parseVibeInput(req.body);
+                if (!parsed.ok) {
+                    return [2 /*return*/, res.json({ code: 1, success: false, message: parsed.message })];
+                }
+                _a.label = 1;
+            case 1:
+                _a.trys.push([1, 3, , 4]);
+                return [4 /*yield*/, ensureYanbotDb()];
+            case 2:
+                _a.sent();
+                data = generateTiaojiReport(parsed.data);
+                res.json({ code: 0, success: true, data: data });
+                return [3 /*break*/, 4];
+            case 3:
+                err_2 = _a.sent();
+                console.error("[tiaoji-report/vibe]", err_2);
+                res.status(500).json({ code: 1, success: false, message: (err_2 === null || err_2 === void 0 ? void 0 : err_2.message) || "服务暂时不可用，请稍后重试" });
+                return [3 /*break*/, 4];
+            case 4: return [2 /*return*/];
         }
     });
 }); });
