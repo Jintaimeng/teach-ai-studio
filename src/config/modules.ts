@@ -83,6 +83,15 @@ export const MODULES: ModuleDef[] = [
     desc: '按考生信息智能推荐一志愿/调剂候选院校',
   },
   {
+    id: 'voice-search',
+    label: '语音速查',
+    icon: 'Mic',
+    path: '/voice-search',
+    type: 'page',
+    group: '教学',
+    desc: '直播答疑时按住空格说话，实时检索关键录取数据',
+  },
+  {
     id: 'cases',
     label: '案例收藏库',
     icon: 'Library',
