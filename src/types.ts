@@ -112,3 +112,75 @@ export interface PermissionResponse {
   behavior: 'allow' | 'deny';
   message?: string;
 }
+
+/* ===================== 志愿推荐 ===================== */
+
+export interface ScoreBand {
+  firstMin: number;
+  firstMax: number;
+  adjustMax: number;
+}
+
+export interface ParsedQuery {
+  score: number | null;
+  subjectName?: string;
+  provinceName?: string;
+  level?: string | null;
+  targetSchoolName?: string;
+  year?: number | null;
+  band: ScoreBand;
+  note?: string;
+}
+
+export interface FilterDelta {
+  firstMinDelta?: number;
+  firstMaxDelta?: number;
+  adjustMaxDelta?: number;
+  level?: string | null;
+}
+
+export interface SchoolCard {
+  schoolName: string;
+  schoolCode: string;
+  level?: string;
+  provinceName?: string;
+  subjectName: string;
+  subjectCode: string;
+  college?: string;
+  year: number;
+  lowestScore?: number;
+  averageScore?: number;
+  highestScore?: number;
+  admissions?: number;
+  applicants?: number | string;
+  remarks?: string;
+  scoreDiff?: number;
+  tier?: '冲' | '稳' | '保';
+  is985?: boolean;
+  is211?: boolean;
+  isDualClass?: boolean;
+}
+
+export interface RecommendGroup {
+  category: '一志愿' | '调剂';
+  items: SchoolCard[];
+}
+
+export interface RecommendResult {
+  parsedQuery: ParsedQuery;
+  groups: RecommendGroup[];
+  note?: string;
+}
+
+export interface FavoriteCaseSummary {
+  id: string;
+  title: string;
+  candidateSummary?: string | null;
+  note?: string | null;
+  createdAt: string;
+}
+
+export interface FavoriteCaseDetail extends FavoriteCaseSummary {
+  query: ParsedQuery;
+  result: RecommendResult;
+}

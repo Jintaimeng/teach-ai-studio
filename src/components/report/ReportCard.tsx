@@ -80,8 +80,6 @@ export function ReportCard({
     .map((tier) => ({ tier, items: recs.filter((r) => r.tier === tier) }))
     .filter((g) => g.items.length > 0);
 
-  const subjectLabel = candidate.subjectGroup === 'physics' ? '物理' : '历史';
-
   return (
     <Card className="w-full border-accent/20 shadow-sm">
       <CardHeader className="pb-3">
@@ -89,15 +87,15 @@ export function ReportCard({
           <span>{emoji}</span>
           <span>{title}</span>
           <span className="ml-auto text-xs font-normal text-muted-foreground">
-            2025 年真实录取数据 · {new Date().toLocaleDateString('zh-CN')}
+            考研真实录取数据 · {new Date().toLocaleDateString('zh-CN')}
           </span>
         </CardTitle>
         <div className="flex flex-wrap gap-1.5 pt-0.5">
           {[
             { label: '分数', value: `${candidate.score} 分` },
-            { label: '选科', value: subjectLabel },
             { label: '方向', value: candidate.major },
             { label: '地区', value: candidate.region },
+            { label: '层次', value: candidate.level || '不限' },
           ].map(({ label, value }) => (
             <span
               key={label}

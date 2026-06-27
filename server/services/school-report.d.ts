@@ -1,2 +1,2 @@
-import { type VibeReport, type VibeReportInput } from './report-types.js';
-export declare function generateVibeReport(input: VibeReportInput): VibeReport;
+import type { VibeReport, VibeReportInput } from './report-types.js';
+export declare function generateVibeReport(input: VibeReportInput): Promise<VibeReport>;

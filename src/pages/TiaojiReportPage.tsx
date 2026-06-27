@@ -5,8 +5,8 @@ const CONFIG: VibeChatConfig = {
   apiEndpoint: '/api/tools/tiaoji-report/vibe',
   welcomeEmoji: '🧭',
   welcomeTitle: 'Vibe 调剂',
-  welcomeDesc: '告诉我你的分数与意向，AI 会筛选「分数已过线、具备录取或征集/调剂机会」的院校专业，输出调剂报告',
-  exampleText: '「我高考 540 分，物理组，能接受调剂，偏好河北本省」',
+  welcomeDesc: '告诉我你的初试分数与意向，AI 会筛选「具备调剂录取机会」的考研院校专业，输出调剂报告',
+  exampleText: '「我初试 310 分，机械工程，能接受调剂，偏好本省」',
   reportTitle: '调剂报告',
   reportEmoji: '🧭',
   reportNoun: '调剂报告',
@@ -23,7 +23,7 @@ export function TiaojiReportPage() {
             调剂报告
           </h1>
           <p className="text-xs" style={{ color: 'var(--td-text-color-secondary)' }}>
-            基于 2025 河北省本科批真实录取数据，对话式生成调剂/征集志愿方案
+            基于 yanbot 考研院校专业历年调剂录取数据，对话式生成调剂方案
           </p>
         </div>
       </div>

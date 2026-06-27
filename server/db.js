@@ -80,6 +80,8 @@ function initDatabase() {
                     db.run("\n    CREATE TABLE IF NOT EXISTS sessions (\n      id TEXT PRIMARY KEY,\n      title TEXT NOT NULL,\n      model TEXT NOT NULL,\n      sdk_session_id TEXT,\n      created_at TEXT NOT NULL,\n      updated_at TEXT NOT NULL\n    )\n  ");
                     db.run("\n    CREATE TABLE IF NOT EXISTS messages (\n      id TEXT PRIMARY KEY,\n      session_id TEXT NOT NULL,\n      role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),\n      content TEXT NOT NULL,\n      model TEXT,\n      created_at TEXT NOT NULL,\n      tool_calls TEXT,\n      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE\n    )\n  ");
                     db.run('CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id)');
+                    // 收藏案例表（志愿推荐结果）
+                    db.run("\n    CREATE TABLE IF NOT EXISTS favorite_cases (\n      id TEXT PRIMARY KEY,\n      title TEXT NOT NULL,\n      candidate_summary TEXT,\n      query_json TEXT NOT NULL,\n      result_json TEXT NOT NULL,\n      note TEXT,\n      created_at TEXT NOT NULL\n    )\n  ");
                     // 数据库迁移：添加 sdk_session_id 列（如果不存在）
                     try {
                         tableInfo = execAsObjects('PRAGMA table_info(sessions)');
@@ -356,4 +358,61 @@ export function clearAllData() {
         });
     });
 }
-export default { getAllSessions: getAllSessions, getSession: getSession, createSession: createSession, updateSession: updateSession, deleteSession: deleteSession, getMessagesBySession: getMessagesBySession, createMessage: createMessage, updateMessage: updateMessage, deleteMessage: deleteMessage, createMessages: createMessages, clearAllData: clearAllData };
+// ============= 收藏案例操作 =============
+export function getAllFavoriteCases() {
+    return __awaiter(this, void 0, void 0, function () {
+        var rows;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, ensureDb()];
+                case 1:
+                    _a.sent();
+                    rows = execAsObjects('SELECT * FROM favorite_cases ORDER BY created_at DESC');
+                    return [2 /*return*/, rows];
+            }
+        });
+    });
+}
+export function getFavoriteCase(id) {
+    return __awaiter(this, void 0, void 0, function () {
+        var rows;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, ensureDb()];
+                case 1:
+                    _a.sent();
+                    rows = execAsObjects('SELECT * FROM favorite_cases WHERE id = ?', [id]);
+                    return [2 /*return*/, rows[0]];
+            }
+        });
+    });
+}
+export function createFavoriteCase(item) {
+    return __awaiter(this, void 0, void 0, function () {
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, ensureDb()];
+                case 1:
+                    _a.sent();
+                    runSql('INSERT INTO favorite_cases (id, title, candidate_summary, query_json, result_json, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [item.id, item.title, item.candidate_summary, item.query_json, item.result_json, item.note, item.created_at]);
+                    afterWrite();
+                    return [2 /*return*/, item];
+            }
+        });
+    });
+}
+export function deleteFavoriteCase(id) {
+    return __awaiter(this, void 0, void 0, function () {
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, ensureDb()];
+                case 1:
+                    _a.sent();
+                    runSql('DELETE FROM favorite_cases WHERE id = ?', [id]);
+                    afterWrite();
+                    return [2 /*return*/, true];
+            }
+        });
+    });
+}
+export default { getAllSessions: getAllSessions, getSession: getSession, createSession: createSession, updateSession: updateSession, deleteSession: deleteSession, getMessagesBySession: getMessagesBySession, createMessage: createMessage, updateMessage: updateMessage, deleteMessage: deleteMessage, createMessages: createMessages, clearAllData: clearAllData, getAllFavoriteCases: getAllFavoriteCases, getFavoriteCase: getFavoriteCase, createFavoriteCase: createFavoriteCase, deleteFavoriteCase: deleteFavoriteCase };

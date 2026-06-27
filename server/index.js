@@ -82,9 +82,9 @@ import fs from "fs";
 import { exec } from "child_process";
 import { promisify } from "util";
 import * as db from "./db.js";
-import { ensureYanbotDb } from "./yanbot-db.js";
 import { generateVibeReport } from "./services/school-report.js";
 import { generateTiaojiReport } from "./services/tiaoji-report.js";
+import { querySchoolScore, getYears, isYanbotConfigured, YanbotApiError, } from "./yanbotClient.js";
 var execAsync = promisify(exec);
 var pendingPermissions = new Map();
 // 权限请求超时时间（5分钟）
@@ -1382,18 +1382,14 @@ app.post("/api/chat", function (req, res) { return __awaiter(void 0, void 0, voi
     });
 }); });
 // ============= 志愿填报报告 API（择校 / 调剂）=============
-/** 轻量手写校验（避免引入 zod），对应 yanbot 原 zod schema。 */
+/** 轻量手写校验（避免引入 zod）。考研模型：分数 + 专业/地区/层次，无文理选科。 */
 function parseVibeInput(body) {
     if (!body || typeof body !== "object")
         return { ok: false, message: "invalid payload" };
     var b = body;
     var score = b.score;
-    if (typeof score !== "number" || !Number.isInteger(score) || score < 200 || score > 750) {
-        return { ok: false, message: "score 必须是 200-750 之间的整数" };
-    }
-    var subjectGroup = b.subjectGroup;
-    if (subjectGroup !== "physics" && subjectGroup !== "history") {
-        return { ok: false, message: "subjectGroup 必须是 physics 或 history" };
+    if (typeof score !== "number" || !Number.isInteger(score) || score < 100 || score > 500) {
+        return { ok: false, message: "score 必须是 100-500 之间的整数（考研初试总分）" };
     }
     var toStringArray = function (v) {
         if (v == null)
@@ -1403,19 +1399,20 @@ function parseVibeInput(body) {
         var arr = v.filter(function (x) { return typeof x === "string" && x.trim().length > 0; });
         return arr.length ? arr : undefined;
     };
+    var level = typeof b.level === "string" && b.level.trim() ? b.level.trim() : null;
     return {
         ok: true,
         data: {
             score: score,
-            subjectGroup: subjectGroup,
             majorKeywords: toStringArray(b.majorKeywords),
             regionPrefs: toStringArray(b.regionPrefs),
+            level: level,
         },
     };
 }
-// 择校报告（移植自 yanbot-claw）
+// 择校报告（取数参考 recommend 模块：yanbot 开放接口 · 一志愿录取分数）
 app.post("/api/tools/school-report/vibe", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
-    var parsed, data, err_1;
+    var parsed, data, err_1, message;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -1423,27 +1420,34 @@ app.post("/api/tools/school-report/vibe", function (req, res) { return __awaiter
                 if (!parsed.ok) {
                     return [2 /*return*/, res.json({ code: 1, success: false, message: parsed.message })];
                 }
+                if (!isYanbotConfigured()) {
+                    return [2 /*return*/, res.json({
+                            code: 1,
+                            success: false,
+                            message: "未配置 yanbot 开放接口凭据，请在 .env 设置 OPEN_API_KEY 与 OPEN_API_SECRET 后重启服务",
+                        })];
+                }
                 _a.label = 1;
             case 1:
                 _a.trys.push([1, 3, , 4]);
-                return [4 /*yield*/, ensureYanbotDb()];
+                return [4 /*yield*/, generateVibeReport(parsed.data)];
             case 2:
-                _a.sent();
-                data = generateVibeReport(parsed.data);
+                data = _a.sent();
                 res.json({ code: 0, success: true, data: data });
                 return [3 /*break*/, 4];
             case 3:
                 err_1 = _a.sent();
                 console.error("[school-report/vibe]", err_1);
-                res.status(500).json({ code: 1, success: false, message: (err_1 === null || err_1 === void 0 ? void 0 : err_1.message) || "服务暂时不可用，请稍后重试" });
+                message = err_1 instanceof YanbotApiError ? err_1.message : (err_1 === null || err_1 === void 0 ? void 0 : err_1.message) || "服务暂时不可用，请稍后重试";
+                res.status(500).json({ code: 1, success: false, message: message });
                 return [3 /*break*/, 4];
             case 4: return [2 /*return*/];
         }
     });
 }); });
-// 调剂报告（新建）
+// 调剂报告（取数参考 recommend 模块：yanbot 开放接口 · 调剂录取分数）
 app.post("/api/tools/tiaoji-report/vibe", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
-    var parsed, data, err_2;
+    var parsed, data, err_2, message;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -1451,21 +1455,406 @@ app.post("/api/tools/tiaoji-report/vibe", function (req, res) { return __awaiter
                 if (!parsed.ok) {
                     return [2 /*return*/, res.json({ code: 1, success: false, message: parsed.message })];
                 }
+                if (!isYanbotConfigured()) {
+                    return [2 /*return*/, res.json({
+                            code: 1,
+                            success: false,
+                            message: "未配置 yanbot 开放接口凭据，请在 .env 设置 OPEN_API_KEY 与 OPEN_API_SECRET 后重启服务",
+                        })];
+                }
                 _a.label = 1;
             case 1:
                 _a.trys.push([1, 3, , 4]);
-                return [4 /*yield*/, ensureYanbotDb()];
+                return [4 /*yield*/, generateTiaojiReport(parsed.data)];
             case 2:
-                _a.sent();
-                data = generateTiaojiReport(parsed.data);
+                data = _a.sent();
                 res.json({ code: 0, success: true, data: data });
                 return [3 /*break*/, 4];
             case 3:
                 err_2 = _a.sent();
                 console.error("[tiaoji-report/vibe]", err_2);
-                res.status(500).json({ code: 1, success: false, message: (err_2 === null || err_2 === void 0 ? void 0 : err_2.message) || "服务暂时不可用，请稍后重试" });
+                message = err_2 instanceof YanbotApiError ? err_2.message : (err_2 === null || err_2 === void 0 ? void 0 : err_2.message) || "服务暂时不可用，请稍后重试";
+                res.status(500).json({ code: 1, success: false, message: message });
                 return [3 /*break*/, 4];
             case 4: return [2 /*return*/];
+        }
+    });
+}); });
+var cachedLatestYear = null;
+function defaultBand(score) {
+    var s = typeof score === "number" && score > 0 ? score : 330;
+    return { firstMin: s - 20, firstMax: s + 10, adjustMax: s + 5 };
+}
+function extractJson(text) {
+    if (!text)
+        return null;
+    // 优先解析 ```json ... ``` 或第一个 {...}
+    var fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    var candidate = fenced ? fenced[1] : text;
+    var start = candidate.indexOf("{");
+    var end = candidate.lastIndexOf("}");
+    if (start === -1 || end === -1 || end <= start)
+        return null;
+    try {
+        return JSON.parse(candidate.slice(start, end + 1));
+    }
+    catch (_a) {
+        return null;
+    }
+}
+var RECOMMEND_PARSE_PROMPT = "\u4F60\u662F\u8003\u7814\u5FD7\u613F\u63A8\u8350\u7684\u9700\u6C42\u89E3\u6790\u5668\u3002\u8BF7\u628A\u8001\u5E08\u7684\u81EA\u7136\u8BED\u8A00\u9700\u6C42\u89E3\u6790\u4E3A JSON\uFF0C\u4EC5\u8F93\u51FA JSON\uFF0C\u4E0D\u8981\u4EFB\u4F55\u591A\u4F59\u6587\u5B57\u3001\u89E3\u91CA\u6216 markdown\u3002\n\n\u8F93\u51FA\u5B57\u6BB5\uFF1A\n{\n  \"score\": \u6570\u5B57\u6216 null,            // \u8003\u751F\u9884\u4F30\u603B\u5206\uFF08\u8003\u7814\u521D\u8BD5\u603B\u5206\uFF0C\u901A\u5E38 250-450\uFF09\n  \"subjectName\": \u5B57\u7B26\u4E32\u6216\u7701\u7565,      // \u62A5\u8003\u4E13\u4E1A\u540D\u79F0\u5173\u952E\u8BCD\uFF08\u5982 \"\u8BA1\u7B97\u673A\" \"\u6CD5\u5F8B\"\uFF09\n  \"provinceName\": \u5B57\u7B26\u4E32\u6216\u7701\u7565,     // \u76EE\u6807\u5730\u533A/\u7701\u4EFD\uFF08\u5982 \"\u6C5F\u82CF\" \"\u5317\u4EAC\"\uFF09\n  \"level\": \"\u53CC\u4E00\u6D41\"|\"211\"|\"985\"|null, // \u9662\u6821\u5C42\u6B21\u8981\u6C42\uFF0C\u65E0\u5219 null\n  \"targetSchoolName\": \u5B57\u7B26\u4E32\u6216\u7701\u7565, // \u660E\u786E\u70B9\u540D\u7684\u76EE\u6807\u9662\u6821\n  \"year\": \u6570\u5B57\u6216 null,             // \u6307\u5B9A\u5E74\u4EFD\uFF0C\u672A\u63D0\u53CA\u4E3A null\n  \"note\": \u5B57\u7B26\u4E32\u6216\u7701\u7565             // \u5BF9\u9700\u6C42\u7684\u4E00\u53E5\u8BDD\u5F52\u7EB3\n}\n\u53EA\u8FD4\u56DE\u4E0A\u8FF0 JSON \u5BF9\u8C61\u3002";
+function parseNlToQuery(message) {
+    return __awaiter(this, void 0, void 0, function () {
+        var model, stream, text, _a, stream_3, stream_3_1, msg, content, _i, content_2, block, r, e_3_1, parsed, score;
+        var _b, e_3, _c, _d;
+        var _e;
+        return __generator(this, function (_f) {
+            switch (_f.label) {
+                case 0:
+                    model = process.env.RECOMMEND_MODEL || defaultModel;
+                    stream = query({
+                        prompt: message,
+                        options: {
+                            cwd: process.cwd(),
+                            model: model,
+                            maxTurns: 1,
+                            permissionMode: "bypassPermissions",
+                            includePartialMessages: false,
+                            systemPrompt: RECOMMEND_PARSE_PROMPT,
+                            env: getSdkEnv(),
+                            stderr: function (data) { return console.log("[Recommend parse stderr] ".concat(data.trim())); },
+                        },
+                    });
+                    text = "";
+                    _f.label = 1;
+                case 1:
+                    _f.trys.push([1, , 14, 16]);
+                    _f.label = 2;
+                case 2:
+                    _f.trys.push([2, 7, 8, 13]);
+                    _a = true, stream_3 = __asyncValues(stream);
+                    _f.label = 3;
+                case 3: return [4 /*yield*/, stream_3.next()];
+                case 4:
+                    if (!(stream_3_1 = _f.sent(), _b = stream_3_1.done, !_b)) return [3 /*break*/, 6];
+                    _d = stream_3_1.value;
+                    _a = false;
+                    msg = _d;
+                    if (msg.type === "assistant") {
+                        content = (_e = msg.message) === null || _e === void 0 ? void 0 : _e.content;
+                        if (typeof content === "string") {
+                            text += content;
+                        }
+                        else if (Array.isArray(content)) {
+                            for (_i = 0, content_2 = content; _i < content_2.length; _i++) {
+                                block = content_2[_i];
+                                if (block.type === "text")
+                                    text += block.text;
+                            }
+                        }
+                    }
+                    else if (msg.type === "result") {
+                        r = msg.result;
+                        if (typeof r === "string" && r.trim())
+                            text = r;
+                        return [3 /*break*/, 6];
+                    }
+                    _f.label = 5;
+                case 5:
+                    _a = true;
+                    return [3 /*break*/, 3];
+                case 6: return [3 /*break*/, 13];
+                case 7:
+                    e_3_1 = _f.sent();
+                    e_3 = { error: e_3_1 };
+                    return [3 /*break*/, 13];
+                case 8:
+                    _f.trys.push([8, , 11, 12]);
+                    if (!(!_a && !_b && (_c = stream_3.return))) return [3 /*break*/, 10];
+                    return [4 /*yield*/, _c.call(stream_3)];
+                case 9:
+                    _f.sent();
+                    _f.label = 10;
+                case 10: return [3 /*break*/, 12];
+                case 11:
+                    if (e_3) throw e_3.error;
+                    return [7 /*endfinally*/];
+                case 12: return [7 /*endfinally*/];
+                case 13: return [3 /*break*/, 16];
+                case 14: return [4 /*yield*/, stream.interrupt().catch(function () { return undefined; })];
+                case 15:
+                    _f.sent();
+                    return [7 /*endfinally*/];
+                case 16:
+                    parsed = extractJson(text) || {};
+                    score = typeof parsed.score === "number" ? parsed.score : Number(parsed.score) || null;
+                    return [2 /*return*/, {
+                            score: score,
+                            subjectName: parsed.subjectName || undefined,
+                            provinceName: parsed.provinceName || undefined,
+                            level: parsed.level || null,
+                            targetSchoolName: parsed.targetSchoolName || undefined,
+                            year: typeof parsed.year === "number" ? parsed.year : null,
+                            band: defaultBand(score),
+                            note: parsed.note || undefined,
+                        }];
+            }
+        });
+    });
+}
+function resolveYear(year) {
+    return __awaiter(this, void 0, void 0, function () {
+        var years, e_4;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    if (year)
+                        return [2 /*return*/, year];
+                    if (cachedLatestYear)
+                        return [2 /*return*/, cachedLatestYear];
+                    _a.label = 1;
+                case 1:
+                    _a.trys.push([1, 3, , 4]);
+                    return [4 /*yield*/, getYears()];
+                case 2:
+                    years = _a.sent();
+                    if (years.length > 0) {
+                        cachedLatestYear = years[0];
+                        return [2 /*return*/, cachedLatestYear];
+                    }
+                    return [3 /*break*/, 4];
+                case 3:
+                    e_4 = _a.sent();
+                    console.warn("[Recommend] 获取最新年份失败，忽略 year 过滤");
+                    return [3 /*break*/, 4];
+                case 4: return [2 /*return*/, undefined];
+            }
+        });
+    });
+}
+function schoolTags(record) {
+    var s = record.school;
+    var level = (record.level || (s === null || s === void 0 ? void 0 : s.level) || "").toString();
+    return {
+        is985: Boolean(s === null || s === void 0 ? void 0 : s.is985) || /985/.test(level),
+        is211: Boolean(s === null || s === void 0 ? void 0 : s.is211) || /211/.test(level),
+        isDualClass: Boolean(s === null || s === void 0 ? void 0 : s.isDual_class) || /双一流/.test(level),
+    };
+}
+function tierForDiff(diff) {
+    if (diff < 0)
+        return "冲";
+    if (diff <= 10)
+        return "稳";
+    return "保";
+}
+function toFirstChoiceCard(r, score) {
+    var _a;
+    var tags = schoolTags(r);
+    var diff = typeof score === "number" && typeof r.lowestScore === "number" ? score - r.lowestScore : undefined;
+    return __assign({ schoolName: r.schoolName, schoolCode: r.schoolCode, level: r.level || ((_a = r.school) === null || _a === void 0 ? void 0 : _a.level), provinceName: r.provinceName, subjectName: r.subjectName, subjectCode: r.subjectCode, college: r.college, year: r.year, lowestScore: r.lowestScore, averageScore: r.averageScore, highestScore: r.highestScore, admissions: r.firstChoiceAdmissions, applicants: r.applicants, remarks: r.remarks, scoreDiff: diff, tier: typeof diff === "number" ? tierForDiff(diff) : undefined }, tags);
+}
+function toAdjustedCard(r, score) {
+    var _a;
+    var tags = schoolTags(r);
+    var diff = typeof score === "number" && typeof r.adjustedLowestScore === "number"
+        ? score - r.adjustedLowestScore
+        : undefined;
+    return __assign({ schoolName: r.schoolName, schoolCode: r.schoolCode, level: r.level || ((_a = r.school) === null || _a === void 0 ? void 0 : _a.level), provinceName: r.provinceName, subjectName: r.subjectName, subjectCode: r.subjectCode, college: r.college, year: r.year, lowestScore: r.adjustedLowestScore, averageScore: r.adjustedAverageScore, highestScore: r.adjustedHighestScore, admissions: r.adjustedAdmissions, applicants: r.applicants, remarks: r.adjustedRemarks, scoreDiff: diff }, tags);
+}
+function runRecommendation(pq) {
+    return __awaiter(this, void 0, void 0, function () {
+        var year, common, _a, firstData, adjustData, firstItems, adjustItems;
+        var _b;
+        return __generator(this, function (_c) {
+            switch (_c.label) {
+                case 0: return [4 /*yield*/, resolveYear(pq.year)];
+                case 1:
+                    year = _c.sent();
+                    common = {
+                        subjectName: pq.subjectName,
+                        provinceName: pq.provinceName,
+                        level: pq.level || undefined,
+                        schoolName: pq.targetSchoolName,
+                        year: year,
+                        includeSchool: true,
+                    };
+                    return [4 /*yield*/, Promise.all([
+                            querySchoolScore(__assign(__assign({}, common), { hasFirstChoice: true, minLowestScore: pq.band.firstMin, maxLowestScore: pq.band.firstMax, sortBy: "lowestScore", sortOrder: "desc", pageSize: 12 })),
+                            querySchoolScore(__assign(__assign({}, common), { hasAdjustment: true, maxAdjustedLowestScore: pq.band.adjustMax, sortBy: "adjustedLowestScore", sortOrder: "desc", pageSize: 8 })),
+                        ])];
+                case 2:
+                    _a = _c.sent(), firstData = _a[0], adjustData = _a[1];
+                    firstItems = (firstData.list || []).map(function (r) { return toFirstChoiceCard(r, pq.score); });
+                    adjustItems = (adjustData.list || []).map(function (r) { return toAdjustedCard(r, pq.score); });
+                    return [2 /*return*/, {
+                            parsedQuery: __assign(__assign({}, pq), { year: (_b = year !== null && year !== void 0 ? year : pq.year) !== null && _b !== void 0 ? _b : null }),
+                            groups: [
+                                { category: "一志愿", items: firstItems },
+                                { category: "调剂", items: adjustItems },
+                            ],
+                            note: pq.note,
+                        }];
+            }
+        });
+    });
+}
+// 推荐：自然语言解析 + 两路检索 + 归一化（或按快捷筛选增量重查）
+app.post("/api/recommend", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var _a, message, prevQuery, filterDelta, pq, band, result, error_13;
+    return __generator(this, function (_b) {
+        switch (_b.label) {
+            case 0:
+                if (!isYanbotConfigured()) {
+                    return [2 /*return*/, res.status(500).json({
+                            error: "未配置 yanbot 开放接口凭据，请在 .env 设置 OPEN_API_KEY 与 OPEN_API_SECRET 后重启服务",
+                        })];
+                }
+                _a = req.body, message = _a.message, prevQuery = _a.prevQuery, filterDelta = _a.filterDelta;
+                _b.label = 1;
+            case 1:
+                _b.trys.push([1, 6, , 7]);
+                pq = void 0;
+                if (!(prevQuery && filterDelta)) return [3 /*break*/, 2];
+                band = {
+                    firstMin: prevQuery.band.firstMin + (filterDelta.firstMinDelta || 0),
+                    firstMax: prevQuery.band.firstMax + (filterDelta.firstMaxDelta || 0),
+                    adjustMax: prevQuery.band.adjustMax + (filterDelta.adjustMaxDelta || 0),
+                };
+                pq = __assign(__assign({}, prevQuery), { band: band, level: filterDelta.level !== undefined ? filterDelta.level : prevQuery.level });
+                return [3 /*break*/, 4];
+            case 2:
+                if (!message || !message.trim()) {
+                    return [2 /*return*/, res.status(400).json({ error: "请输入考生信息与需求" })];
+                }
+                console.log("[Recommend] \u89E3\u6790\u9700\u6C42: ".concat(message.slice(0, 80)));
+                return [4 /*yield*/, parseNlToQuery(message)];
+            case 3:
+                pq = _b.sent();
+                _b.label = 4;
+            case 4: return [4 /*yield*/, runRecommendation(pq)];
+            case 5:
+                result = _b.sent();
+                res.json(result);
+                return [3 /*break*/, 7];
+            case 6:
+                error_13 = _b.sent();
+                if (error_13 instanceof YanbotApiError) {
+                    console.error("[Recommend] yanbot 接口错误:", error_13.message);
+                    return [2 /*return*/, res.status(error_13.statusCode >= 400 ? error_13.statusCode : 502).json({ error: error_13.message })];
+                }
+                console.error("[Recommend] 失败:", error_13);
+                res.status(500).json({ error: (error_13 === null || error_13 === void 0 ? void 0 : error_13.message) || "推荐失败" });
+                return [3 /*break*/, 7];
+            case 7: return [2 /*return*/];
+        }
+    });
+}); });
+// ============= 案例收藏 API =============
+app.get("/api/cases", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var rows, cases, error_14;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                return [4 /*yield*/, db.getAllFavoriteCases()];
+            case 1:
+                rows = _a.sent();
+                cases = rows.map(function (r) { return ({
+                    id: r.id,
+                    title: r.title,
+                    candidateSummary: r.candidate_summary,
+                    note: r.note,
+                    createdAt: r.created_at,
+                }); });
+                res.json({ cases: cases });
+                return [3 /*break*/, 3];
+            case 2:
+                error_14 = _a.sent();
+                res.status(500).json({ error: (error_14 === null || error_14 === void 0 ? void 0 : error_14.message) || "获取案例失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+app.get("/api/cases/:id", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var row, error_15;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                return [4 /*yield*/, db.getFavoriteCase(req.params.id)];
+            case 1:
+                row = _a.sent();
+                if (!row)
+                    return [2 /*return*/, res.status(404).json({ error: "案例不存在" })];
+                res.json({
+                    id: row.id,
+                    title: row.title,
+                    candidateSummary: row.candidate_summary,
+                    note: row.note,
+                    createdAt: row.created_at,
+                    query: JSON.parse(row.query_json),
+                    result: JSON.parse(row.result_json),
+                });
+                return [3 /*break*/, 3];
+            case 2:
+                error_15 = _a.sent();
+                res.status(500).json({ error: (error_15 === null || error_15 === void 0 ? void 0 : error_15.message) || "获取案例失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+app.post("/api/cases", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var _a, title, candidateSummary, q, result, note, now, item, error_16;
+    return __generator(this, function (_b) {
+        switch (_b.label) {
+            case 0:
+                _b.trys.push([0, 2, , 3]);
+                _a = req.body || {}, title = _a.title, candidateSummary = _a.candidateSummary, q = _a.query, result = _a.result, note = _a.note;
+                if (!q || !result) {
+                    return [2 /*return*/, res.status(400).json({ error: "缺少 query 或 result" })];
+                }
+                now = new Date().toISOString();
+                item = {
+                    id: uuidv4(),
+                    title: (title && String(title).slice(0, 100)) || "未命名案例",
+                    candidate_summary: candidateSummary ? String(candidateSummary).slice(0, 200) : null,
+                    query_json: JSON.stringify(q),
+                    result_json: JSON.stringify(result),
+                    note: note ? String(note) : null,
+                    created_at: now,
+                };
+                return [4 /*yield*/, db.createFavoriteCase(item)];
+            case 1:
+                _b.sent();
+                res.json({ id: item.id, success: true });
+                return [3 /*break*/, 3];
+            case 2:
+                error_16 = _b.sent();
+                res.status(500).json({ error: (error_16 === null || error_16 === void 0 ? void 0 : error_16.message) || "收藏失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+app.delete("/api/cases/:id", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var error_17;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                return [4 /*yield*/, db.deleteFavoriteCase(req.params.id)];
+            case 1:
+                _a.sent();
+                res.json({ success: true });
+                return [3 /*break*/, 3];
+            case 2:
+                error_17 = _a.sent();
+                res.status(500).json({ error: (error_17 === null || error_17 === void 0 ? void 0 : error_17.message) || "删除失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
         }
     });
 }); });

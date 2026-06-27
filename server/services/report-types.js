@@ -1,13 +1,6 @@
-/** 志愿填报报告共享类型（择校报告 / 调剂报告复用同一结构）。 */
-export function buildTags(row) {
-    var tags = [];
-    if (row.is_985)
-        tags.push('985');
-    if (row.is_211)
-        tags.push('211');
-    if (row.school_owner === '公办')
-        tags.push('公办');
-    else if (row.school_owner)
-        tags.push(row.school_owner);
-    return tags;
-}
+/** 志愿填报报告共享类型（择校报告 / 调剂报告复用同一结构）。
+ *
+ * 数据来源已由本地 sql.js（高考）切换为 yanbot 开放接口（考研院校专业历年录取分数），
+ * 取数方式参考 recommend 模块（server/yanbotClient.ts）。
+ */
+export {};

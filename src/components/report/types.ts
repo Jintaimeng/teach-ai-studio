@@ -15,9 +15,12 @@ export interface SchoolRec {
 export interface VibeReport {
   candidate: {
     score: number;
-    subjectGroup: 'physics' | 'history';
+    /** 意向专业 */
     major: string;
+    /** 地区偏好 */
     region: string;
+    /** 院校层次：双一流 / 211 / 985 / 不限 */
+    level: string;
   };
   overview: string;
   recs: SchoolRec[];

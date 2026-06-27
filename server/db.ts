@@ -37,6 +37,16 @@ export interface DbMessage {
   tool_calls: string | null;
 }
 
+export interface DbFavoriteCase {
+  id: string;
+  title: string;
+  candidate_summary: string | null;
+  query_json: string;
+  result_json: string;
+  note: string | null;
+  created_at: string;
+}
+
 // ============= 数据库初始化 =============
 
 async function initDatabase(): Promise<void> {
@@ -87,6 +97,19 @@ async function initDatabase(): Promise<void> {
   `);
 
   db.run('CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id)');
+
+  // 收藏案例表（志愿推荐结果）
+  db.run(`
+    CREATE TABLE IF NOT EXISTS favorite_cases (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      candidate_summary TEXT,
+      query_json TEXT NOT NULL,
+      result_json TEXT NOT NULL,
+      note TEXT,
+      created_at TEXT NOT NULL
+    )
+  `);
 
   // 数据库迁移：添加 sdk_session_id 列（如果不存在）
   try {
@@ -291,4 +314,35 @@ export async function clearAllData(): Promise<void> {
   afterWrite();
 }
 
-export default { getAllSessions, getSession, createSession, updateSession, deleteSession, getMessagesBySession, createMessage, updateMessage, deleteMessage, createMessages, clearAllData };
+// ============= 收藏案例操作 =============
+
+export async function getAllFavoriteCases(): Promise<DbFavoriteCase[]> {
+  await ensureDb();
+  const rows = execAsObjects('SELECT * FROM favorite_cases ORDER BY created_at DESC');
+  return rows as DbFavoriteCase[];
+}
+
+export async function getFavoriteCase(id: string): Promise<DbFavoriteCase | undefined> {
+  await ensureDb();
+  const rows = execAsObjects('SELECT * FROM favorite_cases WHERE id = ?', [id]);
+  return rows[0] as DbFavoriteCase | undefined;
+}
+
+export async function createFavoriteCase(item: DbFavoriteCase): Promise<DbFavoriteCase> {
+  await ensureDb();
+  runSql(
+    'INSERT INTO favorite_cases (id, title, candidate_summary, query_json, result_json, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [item.id, item.title, item.candidate_summary, item.query_json, item.result_json, item.note, item.created_at]
+  );
+  afterWrite();
+  return item;
+}
+
+export async function deleteFavoriteCase(id: string): Promise<boolean> {
+  await ensureDb();
+  runSql('DELETE FROM favorite_cases WHERE id = ?', [id]);
+  afterWrite();
+  return true;
+}
+
+export default { getAllSessions, getSession, createSession, updateSession, deleteSession, getMessagesBySession, createMessage, updateMessage, deleteMessage, createMessages, clearAllData, getAllFavoriteCases, getFavoriteCase, createFavoriteCase, deleteFavoriteCase };

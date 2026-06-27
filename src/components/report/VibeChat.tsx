@@ -34,17 +34,17 @@ type Phase =
   | 'idle'
   | 'thinking'
   | 'asking_score'
-  | 'asking_subject'
   | 'asking_major'
   | 'asking_region'
+  | 'asking_level'
   | 'researching'
   | 'done';
 
 const QUESTIONS: Record<string, string> = {
-  score: '📊 请问您的高考成绩是多少分？（480–680 分之间）',
-  subject: '📐 您的选科方向是哪个组合？\n（物理组合 / 历史组合）',
-  major: '📚 您有意向的专业方向吗？\n（例如：计算机、金融、医学、法学 等，可填「不限」）',
-  region: '📍 对就读城市或省份有偏好吗？\n（例如：北京、上海、江苏、不限 等）',
+  score: '📊 请问您的考研初试总分大约是多少？（如 350 分）',
+  major: '📚 您报考的专业方向是？\n（例如：计算机、金融、法学、临床医学 等，可填「不限」）',
+  region: '📍 对目标院校所在地区 / 省份有偏好吗？\n（例如：北京、江苏、不限 等）',
+  level: '🏛️ 对院校层次有要求吗？\n（985 / 211 / 双一流 / 不限）',
 };
 
 let _uidCounter = 0;
@@ -115,16 +115,16 @@ export function VibeChat({ config }: { config: VibeChatConfig }) {
     setIsStreaming(false);
   }
 
-  function nextMissing(): 'score' | 'subject' | 'major' | 'region' | null {
+  function nextMissing(): 'score' | 'major' | 'region' | 'level' | null {
     const ctx = ctxRef.current;
     if (!ctx.score) return 'score';
-    if (!ctx.subjectGroup) return 'subject';
-    if (!ctx.majorKeywords?.length) return 'major';
+    if (ctx.majorKeywords === undefined) return 'major';
     if (!ctx.region) return 'region';
+    if (ctx.level === undefined) return 'level';
     return null;
   }
 
-  async function askQuestion(key: 'score' | 'subject' | 'major' | 'region') {
+  async function askQuestion(key: 'score' | 'major' | 'region' | 'level') {
     syncPhase(`asking_${key}` as Phase);
     await streamAssistant(QUESTIONS[key]);
   }
@@ -132,26 +132,26 @@ export function VibeChat({ config }: { config: VibeChatConfig }) {
   async function runResearch() {
     syncPhase('researching');
     const ctx = ctxRef.current;
-    const score = ctx.score ?? 550;
-    const subjectGroup = ctx.subjectGroup ?? 'physics';
+    const score = ctx.score ?? 350;
     const majorKeywords = ctx.majorKeywords ?? [];
     const region = ctx.region ?? '不限';
-    const subjectLabel = subjectGroup === 'physics' ? '物理组合' : '历史组合';
+    const level = ctx.level ?? '不限';
     const majorLabel = majorKeywords.length ? majorKeywords.join('、') : '综合方向';
 
     await runThinking('🔍 分析考生画像', [
-      `读取高考成绩：${score} 分，选科：${subjectLabel}`,
-      `识别专业意向：${majorLabel}`,
+      `读取初试总分：${score} 分`,
+      `识别报考专业：${majorLabel}`,
       `解析地域偏好：${region}`,
+      `确认院校层次：${level}`,
       '构建考生综合画像完毕',
     ]);
 
     await wait(600);
 
     await runThinking('📦 检索院校数据库', [
-      `查询 2025 年河北省高考录取数据（${subjectLabel}）…`,
-      `筛选分数相关区间院校…`,
+      `调用 yanbot 开放接口检索考研院校专业录取数据…`,
       `匹配「${majorLabel}」相关专业…`,
+      `按地区（${region}）与层次（${level}）过滤…`,
       `按冲、稳、保梯度分层排序…`,
       `补全 985 / 211 / 双一流 标签…`,
       '院校列表生成完毕，共筛选出候选组合若干',
@@ -177,9 +177,9 @@ export function VibeChat({ config }: { config: VibeChatConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           score,
-          subjectGroup,
           majorKeywords,
           regionPrefs: region !== '不限' ? [region] : [],
+          level: level !== '不限' ? level : undefined,
         }),
       });
       const json = await res.json();
@@ -194,7 +194,7 @@ export function VibeChat({ config }: { config: VibeChatConfig }) {
     }
 
     await streamAssistant(
-      `✅ 分析完成！\n\n根据您的情况（高考 ${score} 分 · ${subjectLabel} · 专业方向：${majorLabel} · 地区偏好：${region}），已为您生成个性化${config.reportNoun}：`
+      `✅ 分析完成！\n\n根据您的情况（初试 ${score} 分 · 专业方向：${majorLabel} · 地区偏好：${region} · 院校层次：${level}），已为您生成个性化${config.reportNoun}：`
     );
 
     await wait(300);
@@ -206,7 +206,7 @@ export function VibeChat({ config }: { config: VibeChatConfig }) {
     syncPhase('thinking');
     await runThinking('💡 规划分析策略', [
       '理解考生描述，提取关键信息…',
-      '识别高考成绩、选科、专业偏好…',
+      '识别考研初试总分、报考专业…',
       '检测地域偏好与院校层次要求…',
       '标注缺失信息，规划追问顺序…',
       '初始化报告生成流程',
@@ -225,17 +225,12 @@ export function VibeChat({ config }: { config: VibeChatConfig }) {
     const key = (currentPhase as string).replace('asking_', '');
 
     if (key === 'score' && !parsed.score) {
-      const m = text.match(/\b([4-7]\d{2})\b/);
-      parsed.score = m ? parseInt(m[0]) : 550;
+      const m = text.match(/(\d{2,3})/);
+      parsed.score = m ? parseInt(m[1]) : 350;
     }
-    if (key === 'subject' && !parsed.subjectGroup) {
-      if (/物理|理|physics/i.test(text)) parsed.subjectGroup = 'physics';
-      else if (/历史|文|history/i.test(text)) parsed.subjectGroup = 'history';
-      else parsed.subjectGroup = 'physics';
-    }
-    if (key === 'major' && !parsed.majorKeywords?.length) {
+    if (key === 'major' && parsed.majorKeywords === undefined) {
       const trimmed = text.trim();
-      if (trimmed && !/不限|不清楚/.test(trimmed)) {
+      if (trimmed && !/不限|不清楚|无所谓/.test(trimmed)) {
         parsed.majorKeywords = [trimmed];
       } else {
         parsed.majorKeywords = [];
@@ -243,6 +238,9 @@ export function VibeChat({ config }: { config: VibeChatConfig }) {
     }
     if (key === 'region' && !parsed.region) {
       parsed.region = text.trim() || '不限';
+    }
+    if (key === 'level' && parsed.level === undefined) {
+      parsed.level = text.trim() || '不限';
     }
 
     ctxRef.current = { ...ctxRef.current, ...parsed };
@@ -272,9 +270,9 @@ export function VibeChat({ config }: { config: VibeChatConfig }) {
       await handleFirstMessage(text);
     } else if (
       currentPhase === 'asking_score' ||
-      currentPhase === 'asking_subject' ||
       currentPhase === 'asking_major' ||
-      currentPhase === 'asking_region'
+      currentPhase === 'asking_region' ||
+      currentPhase === 'asking_level'
     ) {
       await handleAnswer(currentPhase, text);
     }
@@ -291,15 +289,15 @@ export function VibeChat({ config }: { config: VibeChatConfig }) {
 
   const placeholder =
     phase === 'idle'
-      ? '描述你的高考情况，回车开始规划…'
+      ? '描述你的考研情况，回车开始规划…'
       : phase === 'asking_score'
-      ? '输入高考成绩（如 580）…'
-      : phase === 'asking_subject'
-      ? '物理组合 或 历史组合…'
+      ? '输入初试总分（如 350）…'
       : phase === 'asking_major'
-      ? '输入专业方向（如 计算机、金融，或填「不限」）…'
+      ? '输入报考专业（如 计算机、金融，或填「不限」）…'
       : phase === 'asking_region'
-      ? '输入城市偏好（如 北京、不限）…'
+      ? '输入地区偏好（如 北京、江苏、不限）…'
+      : phase === 'asking_level'
+      ? '输入院校层次（985 / 211 / 双一流 / 不限）…'
       : '分析中，请稍候…';
 
   return (
