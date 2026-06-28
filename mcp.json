@@ -6,16 +6,14 @@
     "local-agent-test": {
       "type": "stdio",
       "command": "node",
-      "args": [
-        "C:/Users/niuyi/WorkBuddy/2026-06-25-11-57-40/local-agent-app/mcp/test-mcp-server.js"
-      ]
+      "args": ["./mcp/test-mcp-server.js"],
+      "disabled": true
     },
     "math-tools-test": {
       "type": "stdio",
       "command": "node",
-      "args": [
-        "C:/Users/niuyi/WorkBuddy/2026-06-25-11-57-40/local-agent-app/mcp/math-tools-mcp-server.js"
-      ]
+      "args": ["./mcp/math-tools-mcp-server.js"],
+      "disabled": true
     }
   }
 }

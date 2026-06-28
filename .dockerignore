@@ -1,0 +1,24 @@
+# 构建上下文排除项：密钥、依赖、产物、运行时数据均不进镜像
+node_modules
+dist
+build
+.git
+.gitignore
+*.log
+*.tsbuildinfo
+
+# 密钥绝不进镜像（运行期通过 env_file / -e 注入）
+.env
+.env.*
+!.env.example
+
+# 运行时数据库不进镜像（通过 volume 持久化）
+data/chat.db
+data/chat.db-wal
+data/chat.db-shm
+
+# 文档/演示资源
+*.pdf
+PITCH.*
+qrcode.jpg
+snake-game.html

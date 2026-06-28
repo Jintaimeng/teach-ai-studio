@@ -1,15 +1,17 @@
 import { Button, Tooltip, Tag } from 'tdesign-react';
-import { 
+import {
   RefreshIcon,
   SunnyIcon,
   MoonIcon,
   MenuFoldIcon,
   MenuUnfoldIcon,
+  LogoutIcon,
 } from 'tdesign-icons-react';
 import { Bot } from 'lucide-react';
 import { APP_CONFIG } from '../config';
 import { Model, Session, Agent, Theme } from '../types';
 import { ICON_MAP } from '../utils/iconMap';
+import { useAuth } from '../hooks/useAuth';
 
 interface HeaderProps {
   isSettingsPage: boolean;
@@ -34,6 +36,7 @@ export function Header({
   onToggleTheme,
   onRefreshModels,
 }: HeaderProps) {
+  const { user, logout } = useAuth();
   const formatModelName = (modelId: string) => {
     const model = models.find(m => m.modelId === modelId);
     const name = model?.name || modelId;
@@ -96,6 +99,16 @@ export function Header({
               shape="circle"
               icon={<RefreshIcon />}
               onClick={onRefreshModels}
+            />
+          </Tooltip>
+        )}
+        {user && (
+          <Tooltip content={`退出登录（${user.username}）`}>
+            <Button
+              variant="outline"
+              shape="circle"
+              icon={<LogoutIcon />}
+              onClick={logout}
             />
           </Tooltip>
         )}

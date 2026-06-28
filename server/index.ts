@@ -9,6 +9,7 @@ import fs from "fs";
 import { exec } from "child_process";
 import { promisify } from "util";
 import * as db from "./db.js";
+import { requireAuth, handleRegister, handleLogin, handleMe } from "./auth.js";
 import { generateVibeReport } from "./services/school-report.js";
 import { generateTiaojiReport } from "./services/tiaoji-report.js";
 import type { VibeReportInput } from "./services/report-types.js";
@@ -56,6 +57,41 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(express.json());
+
+// ============= agent 并发护栏 =============
+// 每次 query() 会 spawn 一个 CLI 子进程（约 30-50MB）。限制同时在跑的子进程数，
+// 超限的请求排队等待，避免几十并发把内存打爆。
+const AGENT_MAX_CONCURRENCY = Number(process.env.AGENT_MAX_CONCURRENCY) || 20;
+let agentActive = 0;
+const agentWaiters: Array<() => void> = [];
+
+function acquireAgentSlot(): Promise<void> {
+  if (agentActive < AGENT_MAX_CONCURRENCY) {
+    agentActive++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    agentWaiters.push(() => {
+      agentActive++;
+      resolve();
+    });
+  });
+}
+
+function releaseAgentSlot(): void {
+  agentActive = Math.max(0, agentActive - 1);
+  const next = agentWaiters.shift();
+  if (next) next();
+}
+
+function agentQueueDepth(): number {
+  return agentWaiters.length;
+}
+
+// ============= 认证 API =============
+app.post("/api/auth/register", handleRegister);
+app.post("/api/auth/login", handleLogin);
+app.get("/api/auth/me", requireAuth, handleMe);
 
 // 缓存可用模型列表
 let cachedModels: Array<{ modelId: string; name: string; description?: string }> = [];
@@ -191,6 +227,22 @@ function loadMcpServers(): Record<string, McpServerConfig> | undefined {
     cachedMcpInspect = null;
     return undefined;
   }
+}
+
+// 从原始 mcpServers 映射（可能含 disabled 标记）归一化为 SDK 可用的配置，过滤禁用项
+function normalizeMcpServers(
+  raw: Record<string, McpServerConfigWithDisabled> | undefined
+): Record<string, McpServerConfig> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const enabled = Object.fromEntries(
+    Object.entries(raw)
+      .filter(([, config]) => config && !config.disabled)
+      .map(([name, config]) => {
+        const { disabled, ...sdkConfig } = config;
+        return [name, sdkConfig as McpServerConfig];
+      })
+  );
+  return Object.keys(enabled).length > 0 ? enabled : undefined;
 }
 
 function serializeMcpConfigStatus() {
@@ -373,12 +425,17 @@ app.get("/api/mcp-status", (req, res) => {
   });
 });
 
-app.get("/api/mcp/config", (req, res) => {
+// 读取当前用户的 MCP 配置（无则回退全局默认文件）
+app.get("/api/mcp/config", requireAuth, async (req, res) => {
   try {
+    const userCfg = await db.getUserMcpConfig(req.user!.id);
+    if (userCfg) {
+      res.json({ path: "user", content: JSON.stringify(userCfg, null, 2) });
+      return;
+    }
     const content = fs.existsSync(mcpConfigPath)
       ? fs.readFileSync(mcpConfigPath, "utf-8")
       : JSON.stringify({ mcpServers: {} }, null, 2);
-
     res.json({ path: mcpConfigPath, content });
   } catch (error: any) {
     console.error("[MCP config] 读取失败:", error);
@@ -386,7 +443,8 @@ app.get("/api/mcp/config", (req, res) => {
   }
 });
 
-app.put("/api/mcp/config", (req, res) => {
+// 保存当前用户的 MCP 配置到数据库（每用户隔离）
+app.put("/api/mcp/config", requireAuth, async (req, res) => {
   try {
     const { content } = req.body;
     if (typeof content !== "string") {
@@ -403,23 +461,18 @@ app.put("/api/mcp/config", (req, res) => {
       return res.status(400).json({ error: "mcpServers 必须是对象" });
     }
 
-    const dir = path.dirname(mcpConfigPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(mcpConfigPath, JSON.stringify(parsed, null, 2), "utf-8");
-
-    cachedMcpServers = loadMcpServers();
-    cachedMcpInspect = null;
-    lastMcpStatus = [];
-    res.json({ success: true, path: mcpConfigPath });
+    // 统一存成 { mcpServers: {...} } 形态
+    const toStore = "mcpServers" in (parsed as any) ? parsed : { mcpServers };
+    await db.setUserMcpConfig(req.user!.id, toStore);
+    res.json({ success: true, path: "user" });
   } catch (error: any) {
     console.error("[MCP config] 保存失败:", error);
     res.status(400).json({ error: error?.message || "保存 MCP 配置失败" });
   }
 });
 
-app.patch("/api/mcp/servers/:serverName", (req, res) => {
+// 切换当前用户某个 MCP Server 的启用状态（每用户隔离）
+app.patch("/api/mcp/servers/:serverName", requireAuth, async (req, res) => {
   try {
     const { serverName } = req.params;
     const { enabled } = req.body;
@@ -428,44 +481,26 @@ app.patch("/api/mcp/servers/:serverName", (req, res) => {
       return res.status(400).json({ error: "enabled 必须是布尔值" });
     }
 
-    const parsed = fs.existsSync(mcpConfigPath)
-      ? JSON.parse(fs.readFileSync(mcpConfigPath, "utf-8")) as unknown
-      : { mcpServers: {} };
-
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return res.status(400).json({ error: "mcp.json 必须是 JSON 对象" });
+    // 以用户配置为准，无则从全局文件初始化一份
+    let userCfg = await db.getUserMcpConfig(req.user!.id);
+    if (!userCfg) {
+      userCfg = fs.existsSync(mcpConfigPath)
+        ? JSON.parse(fs.readFileSync(mcpConfigPath, "utf-8"))
+        : { mcpServers: {} };
     }
-
-    const configObject = parsed as McpConfigFile & Record<string, McpServerConfigWithDisabled>;
-    const hasWrapper = "mcpServers" in configObject;
-    const mcpServers = hasWrapper ? configObject.mcpServers : configObject;
-
-    if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
-      return res.status(400).json({ error: "mcpServers 必须是对象" });
-    }
-
+    const mcpServers = (userCfg as any).mcpServers || userCfg;
     const serverConfig = mcpServers[serverName];
     if (!serverConfig || typeof serverConfig !== "object" || Array.isArray(serverConfig)) {
       return res.status(404).json({ error: `未找到 MCP Server: ${serverName}` });
     }
 
-    if (enabled) {
-      delete serverConfig.disabled;
-    } else {
-      serverConfig.disabled = true;
-    }
+    if (enabled) delete serverConfig.disabled;
+    else serverConfig.disabled = true;
 
-    const dir = path.dirname(mcpConfigPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(mcpConfigPath, JSON.stringify(parsed, null, 2), "utf-8");
+    const toStore = (userCfg as any).mcpServers ? userCfg : { mcpServers };
+    await db.setUserMcpConfig(req.user!.id, toStore);
 
-    cachedMcpServers = loadMcpServers();
-    cachedMcpInspect = null;
-    lastMcpStatus = [];
-
-    res.json({ success: true, name: serverName, enabled, path: mcpConfigPath });
+    res.json({ success: true, name: serverName, enabled, path: "user" });
   } catch (error: any) {
     console.error("[MCP server] 切换失败:", error);
     res.status(400).json({ error: error?.message || "切换 MCP Server 失败" });
@@ -706,12 +741,13 @@ app.get("/api/models", async (req, res) => {
 // ============= 会话 API =============
 
 // 获取所有会话（包含消息数量）
-app.get("/api/sessions", async (req, res) => {
+app.get("/api/sessions", requireAuth, async (req, res) => {
   try {
-    const sessions = await db.getAllSessions();
+    const userId = req.user!.id;
+    const sessions = await db.getAllSessions(userId);
     const sessionsWithMessages = await Promise.all(
       sessions.map(async session => {
-        const messages = await db.getMessagesBySession(session.id);
+        const messages = await db.getMessagesBySession(session.id, userId);
         return {
           ...session,
           messageCount: messages.length
@@ -726,23 +762,24 @@ app.get("/api/sessions", async (req, res) => {
 });
 
 // 获取单个会话及其消息
-app.get("/api/sessions/:sessionId", async (req, res) => {
+app.get("/api/sessions/:sessionId", requireAuth, async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const session = await db.getSession(sessionId);
-    
+    const userId = req.user!.id;
+    const session = await db.getSession(sessionId, userId);
+
     if (!session) {
       return res.status(404).json({ error: "会话不存在" });
     }
-    
-    const messages = await db.getMessagesBySession(sessionId);
-    
+
+    const messages = await db.getMessagesBySession(sessionId, userId);
+
     // 解析 tool_calls JSON
     const parsedMessages = messages.map(msg => ({
       ...msg,
       tool_calls: msg.tool_calls ? JSON.parse(msg.tool_calls) : null
     }));
-    
+
     res.json({ session, messages: parsedMessages });
   } catch (error: any) {
     console.error("[Session] Error:", error);
@@ -751,20 +788,21 @@ app.get("/api/sessions/:sessionId", async (req, res) => {
 });
 
 // 创建新会话
-app.post("/api/sessions", async (req, res) => {
+app.post("/api/sessions", requireAuth, async (req, res) => {
   try {
     const { model = defaultModel, title = "新对话" } = req.body;
     const now = new Date().toISOString();
-    
+
     const session = await db.createSession({
       id: uuidv4(),
+      user_id: req.user!.id,
       title,
       model,
       sdk_session_id: null,
       created_at: now,
       updated_at: now
     });
-    
+
     res.json({ session });
   } catch (error: any) {
     console.error("[Create Session] Error:", error);
@@ -773,17 +811,17 @@ app.post("/api/sessions", async (req, res) => {
 });
 
 // 更新会话
-app.patch("/api/sessions/:sessionId", async (req, res) => {
+app.patch("/api/sessions/:sessionId", requireAuth, async (req, res) => {
   try {
     const { sessionId } = req.params;
     const { title, model } = req.body;
-    
-    const success = await db.updateSession(sessionId, { title, model });
-    
+
+    const success = await db.updateSession(sessionId, req.user!.id, { title, model });
+
     if (!success) {
       return res.status(404).json({ error: "会话不存在" });
     }
-    
+
     res.json({ success: true });
   } catch (error: any) {
     console.error("[Update Session] Error:", error);
@@ -792,15 +830,15 @@ app.patch("/api/sessions/:sessionId", async (req, res) => {
 });
 
 // 删除会话
-app.delete("/api/sessions/:sessionId", async (req, res) => {
+app.delete("/api/sessions/:sessionId", requireAuth, async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const success = await db.deleteSession(sessionId);
-    
+    const success = await db.deleteSession(sessionId, req.user!.id);
+
     if (!success) {
       return res.status(404).json({ error: "会话不存在" });
     }
-    
+
     res.json({ success: true });
   } catch (error: any) {
     console.error("[Delete Session] Error:", error);
@@ -841,9 +879,10 @@ app.post("/api/permission-response", (req, res) => {
 });
 
 // 发送消息并获取流式响应
-app.post("/api/chat", async (req, res) => {
+app.post("/api/chat", requireAuth, async (req, res) => {
   const { sessionId, message, model, systemPrompt, cwd, permissionMode } = req.body;
-  
+  const userId = req.user!.id;
+
   // 请求日志
   console.log(`\n[Chat] ========== 新请求 ==========`);
   console.log(`[Chat] SessionId: ${sessionId}`);
@@ -857,14 +896,15 @@ app.post("/api/chat", async (req, res) => {
   }
 
   // 获取或创建会话
-  let session = sessionId ? await db.getSession(sessionId) : null;
+  let session = sessionId ? await db.getSession(sessionId, userId) : null;
   const now = new Date().toISOString();
-  
+
   if (!session) {
     // 创建新会话
     console.log(`[Chat] 创建新会话`);
     session = await db.createSession({
       id: sessionId || uuidv4(),
+      user_id: userId,
       title: message.slice(0, 30) + (message.length > 30 ? '...' : ''),
       model: model || defaultModel,
       sdk_session_id: null,  // 稍后从 SDK 获取
@@ -909,7 +949,19 @@ app.post("/api/chat", async (req, res) => {
   // 默认系统提示词
   const defaultSystemPrompt = "你是一个专业的AI助手，善于帮助用户解决各种问题。请用简洁清晰的方式回答问题。";
   const finalSystemPrompt = buildSystemPrompt(systemPrompt || defaultSystemPrompt, lastAvailableSkills);
-  
+
+  // 每用户 MCP 配置：登录用户若有自定义配置则使用它，否则回退到全局默认
+  let effectiveMcpServers: Record<string, McpServerConfig> | undefined = cachedMcpServers;
+  try {
+    const userMcp = await db.getUserMcpConfig(userId);
+    if (userMcp && userMcp.mcpServers) {
+      effectiveMcpServers = normalizeMcpServers(userMcp.mcpServers);
+      console.log(`[Chat] 使用用户自定义 MCP 配置 (${Object.keys(effectiveMcpServers || {}).length} 个)`);
+    }
+  } catch (e: any) {
+    console.warn(`[Chat] 加载用户 MCP 配置失败，回退默认: ${e?.message || e}`);
+  }
+
   // 工作目录：优先使用请求中的 cwd，否则使用当前目录
   const workingDir = cwd || process.cwd();
   let streamTimeoutChecker: ReturnType<typeof setInterval> | undefined;
@@ -952,6 +1004,20 @@ app.post("/api/chat", async (req, res) => {
       });
     }
   });
+
+  // 并发护栏：占用一个 agent 槽位；超限时排队并通知前端
+  if (agentActive >= AGENT_MAX_CONCURRENCY) {
+    console.log(`[Chat] agent 并发已满(${agentActive}/${AGENT_MAX_CONCURRENCY})，排队中，前面还有 ${agentQueueDepth()} 个`);
+    res.write(`data: ${JSON.stringify({ type: "queued", position: agentQueueDepth() + 1 })}\n\n`);
+  }
+  await acquireAgentSlot();
+  let agentSlotReleased = false;
+  const releaseOnce = () => {
+    if (!agentSlotReleased) {
+      agentSlotReleased = true;
+      releaseAgentSlot();
+    }
+  };
 
   try {
     console.log(`[Chat] 调用 SDK query...`);
@@ -1041,7 +1107,7 @@ app.post("/api/chat", async (req, res) => {
         includePartialMessages: true,
         settingSources: ['user', 'project'],
         abortController,
-        ...(cachedMcpServers ? { mcpServers: cachedMcpServers, strictMcpConfig: false } : {}),
+        ...(effectiveMcpServers ? { mcpServers: effectiveMcpServers, strictMcpConfig: false } : {}),
         // 显式传递环境变量，确保 CLI 能访问 API Key
         // 过滤 undefined，避免覆盖父进程环境变量
         // SERVER__PORT=0 让 CLI 使用随机端口，避免与 WorkBuddy 端口冲突
@@ -1115,7 +1181,7 @@ app.post("/api/chat", async (req, res) => {
         
         // 保存 SDK session_id 到数据库（如果是新的）
         if (newSdkSessionId && newSdkSessionId !== sdkSessionId) {
-          await db.updateSession(session.id, { sdk_session_id: newSdkSessionId });
+          await db.updateSession(session.id, userId, { sdk_session_id: newSdkSessionId });
           console.log(`[Stream] Saved SDK session_id to database`);
         }
       } else if (msg.type === "stream_event") {
@@ -1236,9 +1302,9 @@ app.post("/api/chat", async (req, res) => {
     });
 
     // 更新会话标题（如果是第一条消息）
-    const messages = await db.getMessagesBySession(session.id);
+    const messages = await db.getMessagesBySession(session.id, userId);
     if (messages.length <= 2) {
-      await db.updateSession(session.id, { 
+      await db.updateSession(session.id, userId, {
         title: message.slice(0, 30) + (message.length > 30 ? '...' : ''),
         model: selectedModel
       });
@@ -1265,6 +1331,8 @@ app.post("/api/chat", async (req, res) => {
       streamClosed = true;
       res.end();
     }
+  } finally {
+    releaseOnce();
   }
 });
 
@@ -1301,7 +1369,7 @@ function parseVibeInput(body: unknown): { ok: true; data: VibeReportInput } | { 
 }
 
 // 择校报告（取数参考 recommend 模块：yanbot 开放接口 · 一志愿录取分数）
-app.post("/api/tools/school-report/vibe", async (req, res) => {
+app.post("/api/tools/school-report/vibe", requireAuth, async (req, res) => {
   const parsed = parseVibeInput(req.body);
   if (!parsed.ok) {
     return res.json({ code: 1, success: false, message: parsed.message });
@@ -1325,7 +1393,7 @@ app.post("/api/tools/school-report/vibe", async (req, res) => {
 });
 
 // 调剂报告（取数参考 recommend 模块：yanbot 开放接口 · 调剂录取分数）
-app.post("/api/tools/tiaoji-report/vibe", async (req, res) => {
+app.post("/api/tools/tiaoji-report/vibe", requireAuth, async (req, res) => {
   const parsed = parseVibeInput(req.body);
   if (!parsed.ok) {
     return res.json({ code: 1, success: false, message: parsed.message });
@@ -1705,7 +1773,7 @@ async function runRecommendation(pq: ParsedQuery, opts?: { fast?: boolean }) {
 }
 
 // 推荐：自然语言解析 + 两路检索 + 归一化（或按快捷筛选增量重查）
-app.post("/api/recommend", async (req, res) => {
+app.post("/api/recommend", requireAuth, async (req, res) => {
   if (!isYanbotConfigured()) {
     return res.status(500).json({
       error: "未配置 yanbot 开放接口凭据，请在 .env 设置 OPEN_API_KEY 与 OPEN_API_SECRET 后重启服务",
@@ -1769,9 +1837,9 @@ app.post("/api/recommend", async (req, res) => {
 
 // ============= 案例收藏 API =============
 
-app.get("/api/cases", async (req, res) => {
+app.get("/api/cases", requireAuth, async (req, res) => {
   try {
-    const rows = await db.getAllFavoriteCases();
+    const rows = await db.getAllFavoriteCases(req.user!.id);
     const cases = rows.map((r) => ({
       id: r.id,
       title: r.title,
@@ -1785,9 +1853,9 @@ app.get("/api/cases", async (req, res) => {
   }
 });
 
-app.get("/api/cases/:id", async (req, res) => {
+app.get("/api/cases/:id", requireAuth, async (req, res) => {
   try {
-    const row = await db.getFavoriteCase(req.params.id);
+    const row = await db.getFavoriteCase(req.params.id, req.user!.id);
     if (!row) return res.status(404).json({ error: "案例不存在" });
     res.json({
       id: row.id,
@@ -1803,7 +1871,7 @@ app.get("/api/cases/:id", async (req, res) => {
   }
 });
 
-app.post("/api/cases", async (req, res) => {
+app.post("/api/cases", requireAuth, async (req, res) => {
   try {
     const { title, candidateSummary, query: q, result, note } = req.body || {};
     if (!q || !result) {
@@ -1812,6 +1880,7 @@ app.post("/api/cases", async (req, res) => {
     const now = new Date().toISOString();
     const item = {
       id: uuidv4(),
+      user_id: req.user!.id,
       title: (title && String(title).slice(0, 100)) || "未命名案例",
       candidate_summary: candidateSummary ? String(candidateSummary).slice(0, 200) : null,
       query_json: JSON.stringify(q),
@@ -1826,9 +1895,9 @@ app.post("/api/cases", async (req, res) => {
   }
 });
 
-app.delete("/api/cases/:id", async (req, res) => {
+app.delete("/api/cases/:id", requireAuth, async (req, res) => {
   try {
-    await db.deleteFavoriteCase(req.params.id);
+    await db.deleteFavoriteCase(req.params.id, req.user!.id);
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error?.message || "删除失败" });
@@ -1836,7 +1905,7 @@ app.delete("/api/cases/:id", async (req, res) => {
 });
 
 // 案例 → 一键生成小红书宣传文案（SSE 流式）
-app.post("/api/cases/:id/promo", async (req, res) => {
+app.post("/api/cases/:id/promo", requireAuth, async (req, res) => {
   const { model } = (req.body || {}) as { model?: string };
 
   res.setHeader("Content-Type", "text/event-stream");
@@ -1851,7 +1920,7 @@ app.post("/api/cases/:id/promo", async (req, res) => {
   };
 
   try {
-    const row = await db.getFavoriteCase(req.params.id);
+    const row = await db.getFavoriteCase(req.params.id, req.user!.id);
     if (!row) {
       write({ type: "error", message: "案例不存在" });
       return res.end();
@@ -2064,7 +2133,7 @@ function buildCasePromoMaterial(data: CasePromoData): string {
 }
 
 // 资讯列表
-app.get("/api/promo/feeds", async (req, res) => {
+app.get("/api/promo/feeds", requireAuth, async (req, res) => {
   try {
     const page = Number(req.query.page) || 1;
     const pageSize = Math.min(Number(req.query.pageSize) || 20, 100);
@@ -2078,7 +2147,7 @@ app.get("/api/promo/feeds", async (req, res) => {
 });
 
 // 数据 tab：考研院校专业历年录取数据（筛选项）
-app.get("/api/promo/scores/meta", async (req, res) => {
+app.get("/api/promo/scores/meta", requireAuth, async (req, res) => {
   try {
     await ensureMcpReady();
     const [years, levels] = await Promise.all([
@@ -2093,7 +2162,7 @@ app.get("/api/promo/scores/meta", async (req, res) => {
 });
 
 // 数据 tab：考研院校专业历年录取分数线列表
-app.get("/api/promo/scores", async (req, res) => {
+app.get("/api/promo/scores", requireAuth, async (req, res) => {
   try {
     await ensureMcpReady();
     const q = req.query;
@@ -2123,7 +2192,7 @@ app.get("/api/promo/scores", async (req, res) => {
 });
 
 // 一键生成宣传文案（SSE 流式）
-app.post("/api/promo/generate", async (req, res) => {
+app.post("/api/promo/generate", requireAuth, async (req, res) => {
   const { feedIds, feedSnapshot, model } = (req.body || {}) as {
     feedIds?: string[];
     feedSnapshot?: FeedItem[];
@@ -2230,9 +2299,9 @@ app.post("/api/promo/generate", async (req, res) => {
 });
 
 // 已保存文案：列表
-app.get("/api/promo/copies", async (req, res) => {
+app.get("/api/promo/copies", requireAuth, async (req, res) => {
   try {
-    const rows = await db.getAllPromoCopies();
+    const rows = await db.getAllPromoCopies(req.user!.id);
     const copies = rows.map((r) => ({
       id: r.id,
       title: r.title,
@@ -2249,7 +2318,7 @@ app.get("/api/promo/copies", async (req, res) => {
 });
 
 // 已保存文案：保存
-app.post("/api/promo/copies", async (req, res) => {
+app.post("/api/promo/copies", requireAuth, async (req, res) => {
   try {
     const { title, content, feedIds, feedSnapshot } = req.body || {};
     if (!content || !String(content).trim()) {
@@ -2258,6 +2327,7 @@ app.post("/api/promo/copies", async (req, res) => {
     const now = new Date().toISOString();
     const item = {
       id: uuidv4(),
+      user_id: req.user!.id,
       title: (title && String(title).slice(0, 100)) || "未命名文案",
       content: String(content),
       feed_ids: Array.isArray(feedIds) ? JSON.stringify(feedIds) : null,
@@ -2273,10 +2343,10 @@ app.post("/api/promo/copies", async (req, res) => {
 });
 
 // 已保存文案：切换收藏
-app.patch("/api/promo/copies/:id", async (req, res) => {
+app.patch("/api/promo/copies/:id", requireAuth, async (req, res) => {
   try {
     const { favorite } = req.body || {};
-    await db.setPromoCopyFavorite(req.params.id, !!favorite);
+    await db.setPromoCopyFavorite(req.params.id, req.user!.id, !!favorite);
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error?.message || "更新失败" });
@@ -2284,14 +2354,28 @@ app.patch("/api/promo/copies/:id", async (req, res) => {
 });
 
 // 已保存文案：删除
-app.delete("/api/promo/copies/:id", async (req, res) => {
+app.delete("/api/promo/copies/:id", requireAuth, async (req, res) => {
   try {
-    await db.deletePromoCopy(req.params.id);
+    await db.deletePromoCopy(req.params.id, req.user!.id);
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error?.message || "删除失败" });
   }
 });
+
+// ============= 前端静态托管 + SPA fallback =============
+// 生产部署时由 Express 同源托管 Vite 构建产物 dist/，避免 CORS、简化部署。
+const distDir = path.resolve(__dirname, "..", "dist");
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
+  // 非 /api 的路由一律回退到 index.html，交给前端路由处理（排除式正则，勿用 '*'）
+  app.get(/^(?!\/api\/).*/, (_req, res) => {
+    res.sendFile(path.join(distDir, "index.html"));
+  });
+  console.log(`[Static] 已启用前端静态托管: ${distDir}`);
+} else {
+  console.log(`[Static] 未找到 dist 目录，跳过静态托管（开发模式由 Vite 提供前端）`);
+}
 
 // 启动服务器
 const server = app.listen(PORT, () => {

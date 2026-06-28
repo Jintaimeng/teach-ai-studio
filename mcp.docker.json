@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "yanbot": {
+      "url": "https://api.yanbot.tech/mcp"
+    }
+  }
+}

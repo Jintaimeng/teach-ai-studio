@@ -1,9 +1,11 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import type { ComponentType } from 'react';
 import '@tdesign-react/chat/es/style/index.js';
 
 import { MODULES } from './config/modules';
 import { useAgents } from './hooks/useAgents';
+import { isLoggedIn } from './lib/api';
+import { LoginPage } from './pages/LoginPage';
 import { AdminLayout } from './layouts/AdminLayout';
 import { DashboardPage } from './pages/DashboardPage';
 import { AssistantPage } from './pages/AssistantPage';
@@ -35,10 +37,25 @@ function SettingsRoute() {
   );
 }
 
+/** 路由守卫：未登录跳转到 /login */
+function RequireAuth({ children }: { children: JSX.Element }) {
+  if (!isLoggedIn()) {
+    return <Navigate to="/login" replace />;
+  }
+  return children;
+}
+
 function App() {
   return (
     <Routes>
-      <Route element={<AdminLayout />}>
+      <Route path="/login" element={<LoginPage />} />
+      <Route
+        element={
+          <RequireAuth>
+            <AdminLayout />
+          </RequireAuth>
+        }
+      >
         {MODULES.map((m) => {
           if (m.type === 'settings') {
             return <Route key={m.id} path={m.path} element={<SettingsRoute />} />;

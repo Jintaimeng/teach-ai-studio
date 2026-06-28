@@ -1,0 +1,34 @@
+services:
+  app:
+    build: .
+    container_name: teach-ai-studio
+    restart: unless-stopped
+    # ⚠️ sql.js→better-sqlite3 单文件库：仅允许单实例，切勿 scale >1
+    env_file:
+      - .env
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - MCP_CONFIG_PATH=/app/mcp.docker.json
+      # JWT_SECRET / AGENT_MAX_CONCURRENCY 等通过 .env 注入
+    volumes:
+      # chat.db + WAL 持久化，容器重启不丢数据
+      - chatdata:/app/data
+    expose:
+      - "3000"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: teach-ai-nginx
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      # - "443:443"   # 配置 TLS 证书后启用
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # - ./certs:/etc/nginx/certs:ro   # 挂载证书后启用 443
+
+volumes:
+  chatdata:
