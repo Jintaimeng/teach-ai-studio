@@ -5,8 +5,8 @@ import { useVolcAsr } from '../hooks/useVolcAsr';
 import { VoiceOrb, OrbPhase } from '../components/VoiceOrb';
 import { LiveSchoolCard } from '../components/LiveSchoolCard';
 
-/** 直播速查：只看一志愿前 3 个，画面紧凑 */
-const MAX_PER_GROUP = 3;
+/** 直播速查：只看一志愿前 5 个，画面紧凑 */
+const MAX_PER_GROUP = 5;
 const EXAMPLES = [
   '四百分 想去上海的法律硕士 最好是211',
   '三百五 计算机 江苏 冲一冲',
@@ -203,13 +203,8 @@ export function VoiceSearchPage() {
       if (e.code !== 'Space' || isTyping()) return;
       e.preventDefault();
       stop();
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      const finalText = transcriptRef.current;
-      if (finalText) {
-        // 重置去重，确保即使与最后一次快档同文也再跑一次 LLM 精档
-        lastQueriedRef.current = '';
-        window.setTimeout(() => fireSearch(finalText, { fast: false }), 50);
-      }
+      // 松开后不再重新检索：录音过程中的实时（快档）检索即为最终结果。
+      // 不清除已排队的尾随实时检索，让最后说出的几个字也能反映到结果里。
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
@@ -217,7 +212,7 @@ export function VoiceSearchPage() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [supported, start, stop, reset, fireSearch]);
+  }, [supported, start, stop, reset]);
 
   const handleManualSearch = useCallback(() => {
     const text = manualInput.trim();
@@ -228,9 +223,9 @@ export function VoiceSearchPage() {
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-6 py-8">
+      <div className="max-w-4xl mx-auto px-6 py-6 min-h-full flex flex-col">
         {/* 标题 */}
-        <div className="text-center mb-6">
+        <div className="text-center shrink-0">
           <h2 className="text-xl font-semibold mb-1" style={{ color: 'var(--td-text-color-primary)' }}>
             语音速查 · 言出法随
           </h2>
@@ -239,67 +234,77 @@ export function VoiceSearchPage() {
           </p>
         </div>
 
-        {/* 麦克风球 */}
-        <div className="my-8">
+        {/* 上半区：结果在球上方浮现，底部对齐贴近球（交叉淡变） */}
+        <div className="flex-1 min-h-0 w-full flex flex-col justify-end overflow-y-auto py-4">
+          <div className="relative">
+            {prevResult && (
+              <div className="result-layer-exit" key={`prev-${fingerprint(prevResult)}`}>
+                <ResultBody result={prevResult} />
+              </div>
+            )}
+            {result && (
+              <div className="result-layer-enter" key={fingerprint(result)}>
+                <ResultBody result={result} />
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 中央：麦克风球（位置固定居中） */}
+        <div className="shrink-0 flex justify-center">
           <VoiceOrb phase={phase} />
         </div>
 
-        {/* 转写行 / 引导 */}
-        <div className="text-center min-h-[2.5rem] mb-6">
-          {transcript ? (
-            <p className="text-lg font-medium" style={{ color: 'var(--td-text-color-primary)' }}>
-              {transcript}
-              {listening && <span className="inline-block w-0.5 h-5 ml-1 align-middle animate-pulse" style={{ backgroundColor: 'var(--td-brand-color)' }} />}
-            </p>
-          ) : (
-            !result && (
-              <div className="flex flex-wrap gap-2 justify-center">
-                {EXAMPLES.map((s) => (
-                  <button key={s} className="suggestion-chip" onClick={() => fireSearch(s)}>
-                    {s}
-                  </button>
-                ))}
+        {/* 下半区：转写 / 示例 / 错误 / 降级输入 */}
+        <div className="flex-1 min-h-0 w-full flex flex-col items-center pt-4 gap-3">
+          {/* 转写行 / 引导 */}
+          <div className="text-center min-h-[2.5rem]">
+            {transcript ? (
+              <p className="text-lg font-medium" style={{ color: 'var(--td-text-color-primary)' }}>
+                {transcript}
+                {listening && (
+                  <span
+                    className="inline-block w-0.5 h-5 ml-1 align-middle animate-pulse"
+                    style={{ backgroundColor: 'var(--td-brand-color)' }}
+                  />
+                )}
+              </p>
+            ) : (
+              !result && (
+                <div className="flex flex-wrap gap-2 justify-center">
+                  {EXAMPLES.map((s) => (
+                    <button key={s} className="suggestion-chip" onClick={() => fireSearch(s)}>
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )
+            )}
+          </div>
+
+          {(error || asrError) && (
+            <div
+              className="text-sm px-3 py-2 rounded-lg text-center"
+              style={{ backgroundColor: 'rgba(245,108,108,0.1)', color: '#e5484d' }}
+            >
+              {asrError || error}
+            </div>
+          )}
+
+          {/* 不支持语音的降级兜底 */}
+          {!supported && (
+            <div className="max-w-xl w-full flex items-center gap-2">
+              <div className="flex-1">
+                <Input
+                  value={manualInput}
+                  onChange={(v) => setManualInput(v as string)}
+                  placeholder="当前浏览器不支持语音输入，请在此键入需求（建议使用 Chrome / Edge）"
+                  onEnter={handleManualSearch}
+                />
               </div>
-            )
-          )}
-        </div>
-
-        {/* 不支持语音的降级兜底 */}
-        {!supported && (
-          <div className="max-w-xl mx-auto mb-6 flex items-center gap-2">
-            <div className="flex-1">
-              <Input
-                value={manualInput}
-                onChange={(v) => setManualInput(v as string)}
-                placeholder="当前浏览器不支持语音输入，请在此键入需求（建议使用 Chrome / Edge）"
-                onEnter={handleManualSearch}
-              />
-            </div>
-            <Button theme="primary" loading={searching} onClick={handleManualSearch}>
-              检索
-            </Button>
-          </div>
-        )}
-
-        {(error || asrError) && (
-          <div
-            className="text-sm px-3 py-2 rounded-lg text-center mb-4"
-            style={{ backgroundColor: 'rgba(245,108,108,0.1)', color: '#e5484d' }}
-          >
-            {asrError || error}
-          </div>
-        )}
-
-        {/* 结果区（交叉淡变） */}
-        <div className="relative">
-          {prevResult && (
-            <div className="result-layer-exit" key={`prev-${fingerprint(prevResult)}`}>
-              <ResultBody result={prevResult} />
-            </div>
-          )}
-          {result && (
-            <div className="result-layer-enter" key={fingerprint(result)}>
-              <ResultBody result={result} />
+              <Button theme="primary" loading={searching} onClick={handleManualSearch}>
+                检索
+              </Button>
             </div>
           )}
         </div>
