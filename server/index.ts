@@ -9,6 +9,9 @@ import fs from "fs";
 import { exec } from "child_process";
 import { promisify } from "util";
 import * as db from "./db.js";
+import { generateVibeReport } from "./services/school-report.js";
+import { generateTiaojiReport } from "./services/tiaoji-report.js";
+import type { VibeReportInput } from "./services/report-types.js";
 import {
   querySchoolScore,
   getYears,
@@ -16,8 +19,17 @@ import {
   YanbotApiError,
   type SchoolScoreRecord,
 } from "./yanbotClient.js";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type WebSocket } from "ws";
 import { createVolcAsrSession, isVolcAsrConfigured } from "./volcAsr.js";
+import {
+  ensureMcpReady,
+  queryFeeds,
+  getFeedsByIds,
+  querySchoolScores,
+  listScoreYears,
+  listScoreLevels,
+  type FeedItem,
+} from "./yanbotMcp.js";
 
 const execAsync = promisify(exec);
 
@@ -1256,6 +1268,86 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
+// ============= 志愿填报报告 API（择校 / 调剂）=============
+
+/** 轻量手写校验（避免引入 zod）。考研模型：分数 + 专业/地区/层次，无文理选科。 */
+function parseVibeInput(body: unknown): { ok: true; data: VibeReportInput } | { ok: false; message: string } {
+  if (!body || typeof body !== "object") return { ok: false, message: "invalid payload" };
+  const b = body as Record<string, unknown>;
+
+  const score = b.score;
+  if (typeof score !== "number" || !Number.isInteger(score) || score < 100 || score > 500) {
+    return { ok: false, message: "score 必须是 100-500 之间的整数（考研初试总分）" };
+  }
+
+  const toStringArray = (v: unknown): string[] | undefined => {
+    if (v == null) return undefined;
+    if (!Array.isArray(v)) return undefined;
+    const arr = v.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+    return arr.length ? arr : undefined;
+  };
+
+  const level = typeof b.level === "string" && b.level.trim() ? b.level.trim() : null;
+
+  return {
+    ok: true,
+    data: {
+      score,
+      majorKeywords: toStringArray(b.majorKeywords),
+      regionPrefs: toStringArray(b.regionPrefs),
+      level,
+    },
+  };
+}
+
+// 择校报告（取数参考 recommend 模块：yanbot 开放接口 · 一志愿录取分数）
+app.post("/api/tools/school-report/vibe", async (req, res) => {
+  const parsed = parseVibeInput(req.body);
+  if (!parsed.ok) {
+    return res.json({ code: 1, success: false, message: parsed.message });
+  }
+  if (!isYanbotConfigured()) {
+    return res.json({
+      code: 1,
+      success: false,
+      message: "未配置 yanbot 开放接口凭据，请在 .env 设置 OPEN_API_KEY 与 OPEN_API_SECRET 后重启服务",
+    });
+  }
+  try {
+    const data = await generateVibeReport(parsed.data);
+    res.json({ code: 0, success: true, data });
+  } catch (err: any) {
+    console.error("[school-report/vibe]", err);
+    const message =
+      err instanceof YanbotApiError ? err.message : err?.message || "服务暂时不可用，请稍后重试";
+    res.status(500).json({ code: 1, success: false, message });
+  }
+});
+
+// 调剂报告（取数参考 recommend 模块：yanbot 开放接口 · 调剂录取分数）
+app.post("/api/tools/tiaoji-report/vibe", async (req, res) => {
+  const parsed = parseVibeInput(req.body);
+  if (!parsed.ok) {
+    return res.json({ code: 1, success: false, message: parsed.message });
+  }
+  if (!isYanbotConfigured()) {
+    return res.json({
+      code: 1,
+      success: false,
+      message: "未配置 yanbot 开放接口凭据，请在 .env 设置 OPEN_API_KEY 与 OPEN_API_SECRET 后重启服务",
+    });
+  }
+  try {
+    const data = await generateTiaojiReport(parsed.data);
+    res.json({ code: 0, success: true, data });
+  } catch (err: any) {
+    console.error("[tiaoji-report/vibe]", err);
+    const message =
+      err instanceof YanbotApiError ? err.message : err?.message || "服务暂时不可用，请稍后重试";
+    res.status(500).json({ code: 1, success: false, message });
+  }
+});
+
 // ============= 志愿推荐 API =============
 
 interface ScoreBand {
@@ -1743,6 +1835,464 @@ app.delete("/api/cases/:id", async (req, res) => {
   }
 });
 
+// 案例 → 一键生成小红书宣传文案（SSE 流式）
+app.post("/api/cases/:id/promo", async (req, res) => {
+  const { model } = (req.body || {}) as { model?: string };
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+
+  let stream: ReturnType<typeof query> | null = null;
+  let closed = false;
+  const write = (obj: unknown) => {
+    if (!closed) res.write(`data: ${JSON.stringify(obj)}\n\n`);
+  };
+
+  try {
+    const row = await db.getFavoriteCase(req.params.id);
+    if (!row) {
+      write({ type: "error", message: "案例不存在" });
+      return res.end();
+    }
+
+    const caseData: CasePromoData = {
+      title: row.title,
+      candidateSummary: row.candidate_summary,
+      note: row.note,
+      query: JSON.parse(row.query_json),
+      result: JSON.parse(row.result_json),
+    };
+
+    const material = buildCasePromoMaterial(caseData);
+    const selectedModel = model || defaultModel;
+
+    stream = query({
+      prompt: `【志愿推荐案例数据】\n\n${material}\n\n请根据以上案例数据撰写小红书宣传文案。`,
+      options: {
+        cwd: process.cwd(),
+        model: selectedModel,
+        maxTurns: 1,
+        permissionMode: "bypassPermissions",
+        includePartialMessages: true,
+        systemPrompt: CASE_PROMO_PROMPT,
+        env: getSdkEnv(),
+        stderr: (data: string) => console.log(`[cases/promo stderr] ${data.trim()}`),
+      },
+    });
+
+    let fullText = "";
+    write({ type: "init", caseId: row.id, model: selectedModel });
+
+    for await (const msg of stream) {
+      if (closed) break;
+      if ((msg as any).type === "stream_event") {
+        const event = (msg as any).event;
+        if (event?.type === "content_block_delta") {
+          const delta = event.delta;
+          if (delta?.type === "text_delta" && delta.text) {
+            fullText += delta.text;
+            write({ type: "text", content: delta.text });
+          }
+        }
+      } else if ((msg as any).type === "assistant") {
+        const content = (msg as any).message?.content;
+        if (!fullText) {
+          if (typeof content === "string") {
+            fullText += content;
+            write({ type: "text", content });
+          } else if (Array.isArray(content)) {
+            for (const block of content) {
+              if (block.type === "text" && block.text) {
+                fullText += block.text;
+                write({ type: "text", content: block.text });
+              }
+            }
+          }
+        }
+      } else if ((msg as any).type === "result") {
+        const r = (msg as any).result;
+        if (!fullText && typeof r === "string" && r.trim()) {
+          fullText = r;
+          write({ type: "text", content: r });
+        }
+        break;
+      } else if ((msg as any).type === "error") {
+        write({ type: "error", message: (msg as any).error || "生成失败" });
+        break;
+      }
+    }
+
+    write({ type: "done", fullText });
+    res.end();
+  } catch (error: any) {
+    console.error("[cases/promo]", error);
+    write({ type: "error", message: error?.message || "生成失败" });
+    res.end();
+  } finally {
+    closed = true;
+    if (stream) await stream.interrupt().catch(() => undefined);
+  }
+});
+
+// ============= 推广神器 API（基于 yanbot MCP 资讯数据） =============
+
+const PROMO_PROMPT = `你是资深的考研/教育行业运营文案写手。请根据用户提供的【研bot 资讯素材】，撰写一段可直接发布到社交媒体或公众号的中文宣传文案。
+
+要求：
+1. 先给出一个有吸引力的标题（单独一行，以"标题："开头）。
+2. 正文条理清晰、语气积极专业，突出资讯中的关键信息与价值点，引导读者关注。
+3. 结尾可附 2~4 个相关话题标签（以 # 开头）。
+4. 严格基于给定素材，不要杜撰院校名称、分数、日期等事实数据；素材信息不足时不要编造。
+5. 直接输出文案正文，不要输出"好的""以下是"等多余说明，也不要使用代码块包裹。`;
+
+function buildPromoMaterial(feeds: FeedItem[]): string {
+  return feeds
+    .map((f, i) => {
+      const source = f.feedMeta?.title ? `（来源：${f.feedMeta.title}）` : "";
+      const date = f.isoDate ? `\n发布时间：${f.isoDate}` : "";
+      const tags = Array.isArray(f.tags) && f.tags.length ? `\n标签：${f.tags.join("、")}` : "";
+      const bodyRaw = f.content || f.contentSnippet || f.summary || "";
+      const body = bodyRaw ? `\n内容：${String(bodyRaw).slice(0, 800)}` : "";
+      const link = f.link ? `\n原文链接：${f.link}` : "";
+      return `【资讯 ${i + 1}】${f.title || "无标题"}${source}${date}${tags}${body}${link}`;
+    })
+    .join("\n\n");
+}
+
+// ============= 案例 → 小红书宣传文案 =============
+const CASE_PROMO_PROMPT = `你是擅长写小红书爆款笔记的考研志愿规划博主。请根据用户提供的【志愿推荐案例数据】，写一篇可直接发布到小红书的种草笔记。
+
+要求：
+1. 开头一个吸睛标题（单独一行，以"标题："开头），可用 emoji 和"标题党"式表达制造点击欲。
+2. 正文用 emoji 分点排版（每个要点前加合适的 emoji），口语化、有种草感，像真人分享上岸/择校经验。
+3. 紧扣案例数据：突出考生画像（分数/专业/地区/院校层次）以及冲/稳/保候选院校、录取最低分、分差、985/211 等关键信息，帮读者直观感受"这个分能上什么"。
+4. 结尾附 3~6 个以 # 开头的话题标签（如 #考研 #考研择校 #志愿填报 等）。
+5. 严格基于给定数据，不要杜撰院校名称、分数、分差、年份等事实；数据不足处不要编造。
+6. 直接输出笔记内容，不要输出"好的""以下是"等多余说明，也不要用代码块包裹。`;
+
+interface CasePromoData {
+  title?: string;
+  candidateSummary?: string | null;
+  note?: string | null;
+  query?: {
+    score?: number | null;
+    subjectName?: string;
+    provinceName?: string;
+    level?: string | null;
+    targetSchoolName?: string;
+    year?: number | null;
+  };
+  result?: {
+    note?: string;
+    groups?: Array<{
+      category?: string;
+      items?: Array<{
+        schoolName?: string;
+        subjectName?: string;
+        provinceName?: string;
+        level?: string;
+        year?: number;
+        lowestScore?: number;
+        averageScore?: number;
+        scoreDiff?: number;
+        tier?: string;
+        is985?: boolean;
+        is211?: boolean;
+        isDualClass?: boolean;
+      }>;
+    }>;
+  };
+}
+
+function buildCasePromoMaterial(data: CasePromoData): string {
+  const MAX_PER_GROUP = 6;
+  const q = data.query || {};
+  const candidate = [
+    q.score != null ? `总分≈${q.score}` : "",
+    q.subjectName ? `专业「${q.subjectName}」` : "",
+    q.provinceName ? `意向地区「${q.provinceName}」` : "",
+    q.level ? `院校层次「${q.level}」` : "",
+    q.targetSchoolName ? `目标院校「${q.targetSchoolName}」` : "",
+    q.year ? `参考年份${q.year}` : "",
+  ]
+    .filter(Boolean)
+    .join("，");
+
+  const groups = (data.result?.groups || [])
+    .map((g) => {
+      const items = (g.items || []).slice(0, MAX_PER_GROUP);
+      if (items.length === 0) return "";
+      const lines = items
+        .map((c, i) => {
+          const labels = [
+            c.isDualClass ? "双一流" : "",
+            c.is985 ? "985" : "",
+            c.is211 ? "211" : "",
+          ].filter(Boolean).join("/");
+          const parts = [
+            `${i + 1}. ${c.schoolName || "未知院校"}`,
+            c.subjectName ? `专业：${c.subjectName}` : "",
+            c.tier ? `档位：${c.tier}` : "",
+            typeof c.lowestScore === "number" ? `录取最低分：${c.lowestScore}` : "",
+            typeof c.scoreDiff === "number"
+              ? `分差：${c.scoreDiff >= 0 ? "+" + c.scoreDiff : c.scoreDiff}`
+              : "",
+            typeof c.averageScore === "number" && c.averageScore > 0 ? `平均分：${c.averageScore}` : "",
+            c.year ? `年份：${c.year}` : "",
+            labels ? `标签：${labels}` : "",
+          ].filter(Boolean);
+          return "  " + parts.join("，");
+        })
+        .join("\n");
+      return `【${g.category || "候选"}候选】\n${lines}`;
+    })
+    .filter(Boolean)
+    .join("\n\n");
+
+  const resultNote = data.result?.note ? `\n\n补充说明：${data.result.note}` : "";
+  const caseNote = data.note ? `\n\n案例备注：${data.note}` : "";
+
+  return [
+    data.title ? `案例标题：${data.title}` : "",
+    candidate ? `考生条件：${candidate}` : "考生条件：（未提供）",
+    groups || "（暂无候选院校数据）",
+  ]
+    .filter(Boolean)
+    .join("\n\n") + resultNote + caseNote;
+}
+
+// 资讯列表
+app.get("/api/promo/feeds", async (req, res) => {
+  try {
+    const page = Number(req.query.page) || 1;
+    const pageSize = Math.min(Number(req.query.pageSize) || 20, 100);
+    const keyword = typeof req.query.keyword === "string" ? req.query.keyword : undefined;
+    const data = await queryFeeds({ page, pageSize, keyword });
+    res.json({ list: data.list || [], pagination: data.pagination });
+  } catch (error: any) {
+    console.error("[promo/feeds]", error);
+    res.status(502).json({ error: error?.message || "获取资讯失败" });
+  }
+});
+
+// 数据 tab：考研院校专业历年录取数据（筛选项）
+app.get("/api/promo/scores/meta", async (req, res) => {
+  try {
+    await ensureMcpReady();
+    const [years, levels] = await Promise.all([
+      listScoreYears().catch(() => [] as number[]),
+      listScoreLevels().catch(() => [] as string[]),
+    ]);
+    res.json({ years, levels });
+  } catch (error: any) {
+    console.error("[promo/scores/meta]", error);
+    res.status(502).json({ error: error?.message || "获取筛选项失败" });
+  }
+});
+
+// 数据 tab：考研院校专业历年录取分数线列表
+app.get("/api/promo/scores", async (req, res) => {
+  try {
+    await ensureMcpReady();
+    const q = req.query;
+    const subjectRaw = typeof q.subject === "string" ? q.subject.trim() : "";
+    const params: Parameters<typeof querySchoolScores>[0] = {
+      schoolName: typeof q.schoolName === "string" ? q.schoolName : undefined,
+      year: q.year ? Number(q.year) : undefined,
+      level: typeof q.level === "string" ? q.level : undefined,
+      studyForm: typeof q.studyForm === "string" ? q.studyForm : undefined,
+      minLowestScore: q.minLowestScore ? Number(q.minLowestScore) : undefined,
+      page: q.page ? Number(q.page) : 1,
+      pageSize: Math.min(q.pageSize ? Number(q.pageSize) : 20, 50),
+      sortBy: typeof q.sortBy === "string" ? q.sortBy : "lowestScore",
+      sortOrder: q.sortOrder === "asc" ? "asc" : "desc",
+    };
+    // 专业：6 位数字按代码，否则按名称
+    if (subjectRaw) {
+      if (/^\d{6}$/.test(subjectRaw)) params.subjectCode = subjectRaw;
+      else params.subjectName = subjectRaw;
+    }
+    const data = await querySchoolScores(params);
+    res.json({ list: data.list || [], pagination: data.pagination });
+  } catch (error: any) {
+    console.error("[promo/scores]", error);
+    res.status(502).json({ error: error?.message || "获取录取数据失败" });
+  }
+});
+
+// 一键生成宣传文案（SSE 流式）
+app.post("/api/promo/generate", async (req, res) => {
+  const { feedIds, feedSnapshot, model } = (req.body || {}) as {
+    feedIds?: string[];
+    feedSnapshot?: FeedItem[];
+    model?: string;
+  };
+
+  if (!Array.isArray(feedIds) || feedIds.length === 0) {
+    return res.status(400).json({ error: "请至少选择一条资讯" });
+  }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+
+  let stream: ReturnType<typeof query> | null = null;
+  let closed = false;
+  const write = (obj: unknown) => {
+    if (!closed) res.write(`data: ${JSON.stringify(obj)}\n\n`);
+  };
+
+  try {
+    await ensureMcpReady();
+    let feeds = await getFeedsByIds(feedIds);
+    // 兜底：MCP 未取到内容时用前端传来的快照
+    if ((!feeds || feeds.length === 0) && Array.isArray(feedSnapshot) && feedSnapshot.length) {
+      feeds = feedSnapshot;
+    }
+    if (!feeds || feeds.length === 0) {
+      write({ type: "error", message: "未能获取选中的资讯内容，请重试" });
+      return res.end();
+    }
+
+    const material = buildPromoMaterial(feeds);
+    const selectedModel = model || defaultModel;
+
+    stream = query({
+      prompt: `【研bot 资讯素材】\n\n${material}\n\n请根据以上资讯撰写宣传文案。`,
+      options: {
+        cwd: process.cwd(),
+        model: selectedModel,
+        maxTurns: 1,
+        permissionMode: "bypassPermissions",
+        includePartialMessages: true,
+        systemPrompt: PROMO_PROMPT,
+        env: getSdkEnv(),
+        stderr: (data: string) => console.log(`[promo/generate stderr] ${data.trim()}`),
+      },
+    });
+
+    let fullText = "";
+    write({ type: "init", feedCount: feeds.length, model: selectedModel });
+
+    for await (const msg of stream) {
+      if (closed) break;
+      if ((msg as any).type === "stream_event") {
+        const event = (msg as any).event;
+        if (event?.type === "content_block_delta") {
+          const delta = event.delta;
+          if (delta?.type === "text_delta" && delta.text) {
+            fullText += delta.text;
+            write({ type: "text", content: delta.text });
+          }
+        }
+      } else if ((msg as any).type === "assistant") {
+        // 非流式回退：仅当 partial 未产出任何文本时使用
+        const content = (msg as any).message?.content;
+        if (!fullText) {
+          if (typeof content === "string") {
+            fullText += content;
+            write({ type: "text", content });
+          } else if (Array.isArray(content)) {
+            for (const block of content) {
+              if (block.type === "text" && block.text) {
+                fullText += block.text;
+                write({ type: "text", content: block.text });
+              }
+            }
+          }
+        }
+      } else if ((msg as any).type === "result") {
+        const r = (msg as any).result;
+        if (!fullText && typeof r === "string" && r.trim()) {
+          fullText = r;
+          write({ type: "text", content: r });
+        }
+        break;
+      } else if ((msg as any).type === "error") {
+        write({ type: "error", message: (msg as any).error || "生成失败" });
+        break;
+      }
+    }
+
+    write({ type: "done", fullText });
+    res.end();
+  } catch (error: any) {
+    console.error("[promo/generate]", error);
+    write({ type: "error", message: error?.message || "生成失败" });
+    res.end();
+  } finally {
+    closed = true;
+    if (stream) await stream.interrupt().catch(() => undefined);
+  }
+});
+
+// 已保存文案：列表
+app.get("/api/promo/copies", async (req, res) => {
+  try {
+    const rows = await db.getAllPromoCopies();
+    const copies = rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      content: r.content,
+      feedIds: r.feed_ids ? JSON.parse(r.feed_ids) : [],
+      feedSnapshot: r.feed_snapshot ? JSON.parse(r.feed_snapshot) : [],
+      favorite: !!r.favorite,
+      createdAt: r.created_at,
+    }));
+    res.json({ copies });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || "获取文案失败" });
+  }
+});
+
+// 已保存文案：保存
+app.post("/api/promo/copies", async (req, res) => {
+  try {
+    const { title, content, feedIds, feedSnapshot } = req.body || {};
+    if (!content || !String(content).trim()) {
+      return res.status(400).json({ error: "文案内容为空" });
+    }
+    const now = new Date().toISOString();
+    const item = {
+      id: uuidv4(),
+      title: (title && String(title).slice(0, 100)) || "未命名文案",
+      content: String(content),
+      feed_ids: Array.isArray(feedIds) ? JSON.stringify(feedIds) : null,
+      feed_snapshot: feedSnapshot ? JSON.stringify(feedSnapshot) : null,
+      favorite: 0,
+      created_at: now,
+    };
+    await db.createPromoCopy(item);
+    res.json({ id: item.id, success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || "保存失败" });
+  }
+});
+
+// 已保存文案：切换收藏
+app.patch("/api/promo/copies/:id", async (req, res) => {
+  try {
+    const { favorite } = req.body || {};
+    await db.setPromoCopyFavorite(req.params.id, !!favorite);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || "更新失败" });
+  }
+});
+
+// 已保存文案：删除
+app.delete("/api/promo/copies/:id", async (req, res) => {
+  try {
+    await db.deletePromoCopy(req.params.id);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || "删除失败" });
+  }
+});
+
 // 启动服务器
 const server = app.listen(PORT, () => {
   console.log(`
@@ -1762,7 +2312,7 @@ const server = app.listen(PORT, () => {
 // 浏览器(16k/16bit/mono PCM) ↔ 本代理 ↔ 火山双向流式 ASR；凭据仅驻留服务端。
 const asrWss = new WebSocketServer({ server, path: "/api/asr" });
 let asrConnSeq = 0;
-asrWss.on("connection", (client) => {
+asrWss.on("connection", (client: WebSocket) => {
   const connId = ++asrConnSeq;
   let audioFrames = 0;
   let audioBytes = 0;

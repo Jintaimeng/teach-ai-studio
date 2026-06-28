@@ -1,3 +1,4 @@
+import type { LucideIcon } from 'lucide-react';
 import {
   Bot,
   Code,
@@ -12,10 +13,11 @@ import {
   GraduationCap,
   Library,
   Mic,
+  Megaphone,
 } from 'lucide-react';
 
 // Icon 映射
-export const ICON_MAP: Record<string, React.ComponentType<{ size?: number; color?: string }>> = {
+export const ICON_MAP: Record<string, LucideIcon> = {
   Bot,
   Sparkles,
   Code,
@@ -31,4 +33,5 @@ export const ICON_MAP: Record<string, React.ComponentType<{ size?: number; color
   GraduationCap,
   Library,
   Mic,
+  Megaphone,
 };

@@ -47,6 +47,16 @@ export interface DbFavoriteCase {
   created_at: string;
 }
 
+export interface DbPromoCopy {
+  id: string;
+  title: string;
+  content: string;
+  feed_ids: string | null;       // JSON: 选中的资讯 id 数组
+  feed_snapshot: string | null;  // JSON: 生成时的资讯标题/来源快照
+  favorite: number;              // 0 / 1
+  created_at: string;
+}
+
 // ============= 数据库初始化 =============
 
 async function initDatabase(): Promise<void> {
@@ -107,6 +117,19 @@ async function initDatabase(): Promise<void> {
       query_json TEXT NOT NULL,
       result_json TEXT NOT NULL,
       note TEXT,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  // 推广文案表（推广神器生成结果）
+  db.run(`
+    CREATE TABLE IF NOT EXISTS promo_copies (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      feed_ids TEXT,
+      feed_snapshot TEXT,
+      favorite INTEGER DEFAULT 0,
       created_at TEXT NOT NULL
     )
   `);
@@ -345,4 +368,42 @@ export async function deleteFavoriteCase(id: string): Promise<boolean> {
   return true;
 }
 
-export default { getAllSessions, getSession, createSession, updateSession, deleteSession, getMessagesBySession, createMessage, updateMessage, deleteMessage, createMessages, clearAllData, getAllFavoriteCases, getFavoriteCase, createFavoriteCase, deleteFavoriteCase };
+// ============= 推广文案操作 =============
+
+export async function getAllPromoCopies(): Promise<DbPromoCopy[]> {
+  await ensureDb();
+  const rows = execAsObjects('SELECT * FROM promo_copies ORDER BY created_at DESC');
+  return rows as DbPromoCopy[];
+}
+
+export async function getPromoCopy(id: string): Promise<DbPromoCopy | undefined> {
+  await ensureDb();
+  const rows = execAsObjects('SELECT * FROM promo_copies WHERE id = ?', [id]);
+  return rows[0] as DbPromoCopy | undefined;
+}
+
+export async function createPromoCopy(item: DbPromoCopy): Promise<DbPromoCopy> {
+  await ensureDb();
+  runSql(
+    'INSERT INTO promo_copies (id, title, content, feed_ids, feed_snapshot, favorite, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [item.id, item.title, item.content, item.feed_ids, item.feed_snapshot, item.favorite, item.created_at]
+  );
+  afterWrite();
+  return item;
+}
+
+export async function setPromoCopyFavorite(id: string, favorite: boolean): Promise<boolean> {
+  await ensureDb();
+  runSql('UPDATE promo_copies SET favorite = ? WHERE id = ?', [favorite ? 1 : 0, id]);
+  afterWrite();
+  return true;
+}
+
+export async function deletePromoCopy(id: string): Promise<boolean> {
+  await ensureDb();
+  runSql('DELETE FROM promo_copies WHERE id = ?', [id]);
+  afterWrite();
+  return true;
+}
+
+export default { getAllSessions, getSession, createSession, updateSession, deleteSession, getMessagesBySession, createMessage, updateMessage, deleteMessage, createMessages, clearAllData, getAllFavoriteCases, getFavoriteCase, createFavoriteCase, deleteFavoriteCase, getAllPromoCopies, getPromoCopy, createPromoCopy, setPromoCopyFavorite, deletePromoCopy };

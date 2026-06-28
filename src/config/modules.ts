@@ -74,6 +74,22 @@ export const MODULES: ModuleDef[] = [
     },
   },
   {
+    id: 'zhaixiao-report',
+    label: '择校报告',
+    icon: 'GraduationCap',
+    path: '/zhaixiao-report',
+    type: 'page',
+    group: '志愿填报',
+    desc: '对话式生成个性化择校报告（基于真实录取数据）',
+  },
+  {
+    id: 'tiaoji-report',
+    label: '调剂报告',
+    icon: 'ClipboardList',
+    path: '/tiaoji-report',
+    type: 'page',
+    group: '志愿填报',
+    desc: '对话式生成调剂/征集志愿方案（基于真实录取数据）'},{
     id: 'recommend',
     label: '志愿推荐',
     icon: 'GraduationCap',
@@ -99,6 +115,15 @@ export const MODULES: ModuleDef[] = [
     type: 'page',
     group: '教学',
     desc: '查看收藏的志愿推荐案例',
+  },
+  {
+    id: 'promo',
+    label: '推广神器',
+    icon: 'Megaphone',
+    path: '/promo',
+    type: 'page',
+    group: '教学',
+    desc: '基于研bot资讯一键生成宣传文案',
   },
   {
     id: 'settings',
