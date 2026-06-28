@@ -7,6 +7,7 @@ import { AdminLayout } from './layouts/AdminLayout';
 import { DashboardPage } from './pages/DashboardPage';
 import { AssistantPage } from './pages/AssistantPage';
 import { RecommendPage } from './pages/RecommendPage';
+import { VoiceSearchPage } from './pages/VoiceSearchPage';
 import { CaseLibraryPage } from './pages/CaseLibraryPage';
 import { PlaceholderPage } from './components/PlaceholderPage';
 import { SettingsPage } from './components/SettingsPage';
@@ -41,6 +42,9 @@ function App() {
           }
           if (m.id === 'recommend') {
             return <Route key={m.id} path={m.path} element={<RecommendPage />} />;
+          }
+          if (m.id === 'voice-search') {
+            return <Route key={m.id} path={m.path} element={<VoiceSearchPage />} />;
           }
           if (m.id === 'cases') {
             return <Route key={m.id} path={m.path} element={<CaseLibraryPage />} />;

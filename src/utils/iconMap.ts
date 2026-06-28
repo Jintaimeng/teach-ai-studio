@@ -11,6 +11,7 @@ import {
   ClipboardList,
   GraduationCap,
   Library,
+  Mic,
 } from 'lucide-react';
 
 // Icon 映射
@@ -29,4 +30,5 @@ export const ICON_MAP: Record<string, React.ComponentType<{ size?: number; color
   ClipboardList,
   GraduationCap,
   Library,
+  Mic,
 };

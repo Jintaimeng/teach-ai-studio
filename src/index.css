@@ -683,3 +683,92 @@ t-chat-sender::part(send-btn):disabled,
   color: var(--td-brand-color);
   background-color: var(--td-brand-color-light);
 }
+
+/* ===== 语音速查「言出法随」模块动画 ===== */
+
+/* 结果整组：进入 / 退出（交叉淡变） */
+@keyframes result-enter {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes result-exit {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateY(-8px) scale(0.985); }
+}
+.result-layer-enter {
+  animation: result-enter 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.result-layer-exit {
+  position: absolute;
+  inset: 0;
+  animation: result-exit 0.28s ease-in both;
+  pointer-events: none;
+}
+
+/* 卡片错落弹入 */
+@keyframes card-pop-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+.card-pop-in {
+  animation: card-pop-in 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 麦克风球：待命呼吸 */
+@keyframes orb-breathe {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.04); }
+}
+.orb-idle {
+  animation: orb-breathe 3s ease-in-out infinite;
+}
+
+/* 麦克风球：聆听光晕脉冲 */
+@keyframes orb-pulse {
+  0%   { box-shadow: 0 0 0 0 var(--td-brand-color-focus); }
+  70%  { box-shadow: 0 0 0 22px rgba(79, 70, 229, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(79, 70, 229, 0); }
+}
+.orb-listening {
+  animation: orb-pulse 1.6s ease-out infinite;
+}
+
+/* 声波律动条 */
+@keyframes wave {
+  0%, 100% { transform: scaleY(0.35); }
+  50%      { transform: scaleY(1); }
+}
+.wave-bar {
+  transform-origin: center bottom;
+  animation: wave 0.9s ease-in-out infinite;
+}
+
+/* 检索中：环形流光 */
+@keyframes orb-spin {
+  to { transform: rotate(360deg); }
+}
+.orb-spin-ring {
+  animation: orb-spin 1s linear infinite;
+}
+
+/* 条件标签点亮 */
+@keyframes tag-pop {
+  from { opacity: 0; transform: scale(0.8); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.tag-pop {
+  animation: tag-pop 0.25s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .result-layer-enter,
+  .result-layer-exit,
+  .card-pop-in,
+  .orb-idle,
+  .orb-listening,
+  .wave-bar,
+  .orb-spin-ring,
+  .tag-pop {
+    animation: none !important;
+  }
+}
