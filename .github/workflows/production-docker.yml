@@ -1,0 +1,93 @@
+# ==========================================
+# teach-ai-studio - Production 环境 Docker 部署工作流
+# ==========================================
+# 工作流程：
+# 1. 在 GitHub Actions 中构建 Docker 镜像（Express + Vite SPA）
+# 2. 推送镜像到自建 Docker Registry
+# 3. SCP 配置文件（compose + deploy 脚本）到服务器
+# 4. SSH 到服务器拉取镜像并重启容器（含健康检查与自动回滚）
+# ==========================================
+
+name: Deploy to Production (Docker)
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: teach-ai-studio-production-docker
+  cancel-in-progress: false
+
+env:
+  REGISTRY: docker.niuy.xyz
+  IMAGE_NAME: docker.niuy.xyz/${{ secrets.DOCKER_USERNAME }}/teach-ai-studio
+  IMAGE_TAG: production-${{ github.sha }}
+
+jobs:
+  build-and-deploy:
+    name: Build & Deploy to Production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAME }}:production-latest
+          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:production-buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:production-buildcache,mode=max
+
+      - name: Copy configuration files to server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.STUDIO_PROD_HOST }}
+          username: ${{ secrets.STUDIO_PROD_USER }}
+          password: ${{ secrets.STUDIO_PROD_PWD }}
+          port: ${{ secrets.STUDIO_PROD_PORT }}
+          source: "docker-compose.production.yml,scripts/deploy-production.sh"
+          target: "/www/teach-ai-studio-production/"
+          overwrite: true
+
+      - name: Deploy to production server
+        uses: appleboy/ssh-action@master
+        env:
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        with:
+          host: ${{ secrets.STUDIO_PROD_HOST }}
+          username: ${{ secrets.STUDIO_PROD_USER }}
+          password: ${{ secrets.STUDIO_PROD_PWD }}
+          port: ${{ secrets.STUDIO_PROD_PORT }}
+          envs: DOCKER_PASSWORD,DOCKER_USERNAME,REGISTRY,IMAGE_NAME,IMAGE_TAG
+          script: |
+            cd /www/teach-ai-studio-production
+            chmod +x scripts/deploy-production.sh
+            ./scripts/deploy-production.sh
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "### 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: Production" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY

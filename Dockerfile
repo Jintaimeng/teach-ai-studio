@@ -31,9 +31,8 @@ COPY package*.json ./
 # 安装全部依赖（含 tsx 等 devDeps，运行期需要 tsx 直接执行 TS）
 RUN npm ci && npm cache clean --force
 
-# 拷贝源码与构建产物
+# 拷贝运行期所需的后端源码与构建产物（前端已构建进 dist，运行期无需 src）
 COPY server ./server
-COPY src ./src
 COPY mcp ./mcp
 COPY mcp.docker.json ./mcp.docker.json
 COPY tsconfig*.json ./

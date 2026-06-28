@@ -1,0 +1,29 @@
+services:
+  teach-ai-studio:
+    image: ${IMAGE_NAME:-docker.niuy.xyz/niuyi1017/teach-ai-studio}:${IMAGE_TAG:-production-latest}
+    container_name: teach-ai-studio-production
+    restart: unless-stopped
+    # ⚠️ better-sqlite3 单文件库：仅允许单实例，切勿 scale >1
+    ports:
+      - "3002:3000"
+    env_file:
+      - env/.env.production
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - MCP_CONFIG_PATH=/app/mcp.docker.json
+    volumes:
+      # 用户数据库可写持久化（chat.db + WAL），容器重启不丢数据
+      - ./data:/app/data
+      - ./logs:/app/logs
+    healthcheck:
+      test: [ "CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" ]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
