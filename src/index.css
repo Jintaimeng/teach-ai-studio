@@ -2,6 +2,17 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 报告功能子树：preflight 关闭后裸 border 工具类默认色失效，这里在 base 层补齐默认
+   边框色（放在 base 层，使带颜色的 border-xxx 工具类仍能正常覆盖），令移植自 shadcn 的
+   报告组件（择校/调剂报告）边框显示正常。 */
+@layer base {
+  .report-scope,
+  .report-scope * {
+    border-color: var(--td-component-stroke);
+  }
+}
+
+
 /* ===== 主题变量 ===== */
 :root {
   /* Light Theme */

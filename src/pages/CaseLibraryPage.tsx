@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, MessagePlugin, Popconfirm } from 'tdesign-react';
 import { DeleteIcon, ChevronLeftIcon } from 'tdesign-icons-react';
-import { Library } from 'lucide-react';
+import { Library, Megaphone } from 'lucide-react';
 import { FavoriteCaseDetail, FavoriteCaseSummary } from '../types';
 import { RecommendResult } from '../components/RecommendResult';
 
@@ -10,6 +10,12 @@ export function CaseLibraryPage() {
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState<FavoriteCaseDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  // ── 一键生成宣传文案 ──
+  const [generating, setGenerating] = useState(false);
+  const [copyText, setCopyText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchCases = useCallback(async () => {
     setLoading(true);
@@ -34,12 +40,19 @@ export function CaseLibraryPage() {
       const res = await fetch(`/api/cases/${id}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || '获取详情失败');
+      setCopyText('');
       setDetail(data);
     } catch (e: any) {
       MessagePlugin.error(e?.message || '获取详情失败');
     } finally {
       setDetailLoading(false);
     }
+  }, []);
+
+  const closeDetail = useCallback(() => {
+    abortRef.current?.abort();
+    setCopyText('');
+    setDetail(null);
   }, []);
 
   const handleDelete = useCallback(
@@ -57,20 +70,129 @@ export function CaseLibraryPage() {
     [detail, fetchCases]
   );
 
+  // 一键生成小红书文案（SSE 流式）
+  const handleGenerate = useCallback(async () => {
+    if (!detail) return;
+    setGenerating(true);
+    setCopyText('');
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const res = await fetch(`/api/cases/${detail.id}/promo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || '生成失败');
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let acc = '';
+
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const payload = trimmed.slice(5).trim();
+          if (!payload) continue;
+          let evt: any;
+          try {
+            evt = JSON.parse(payload);
+          } catch {
+            continue;
+          }
+          if (evt.type === 'text' && evt.content) {
+            acc += evt.content;
+            setCopyText(acc);
+          } else if (evt.type === 'done') {
+            if (evt.fullText) {
+              acc = evt.fullText;
+              setCopyText(acc);
+            }
+          } else if (evt.type === 'error') {
+            throw new Error(evt.message || '生成失败');
+          }
+        }
+      }
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return;
+      MessagePlugin.error(e?.message || '生成失败');
+    } finally {
+      setGenerating(false);
+      abortRef.current = null;
+    }
+  }, [detail]);
+
+  const handleCopyToClipboard = useCallback(async (text: string) => {
+    if (!text.trim()) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      MessagePlugin.success('已复制到剪贴板');
+    } catch {
+      MessagePlugin.error('复制失败，请手动选择文本');
+    }
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    if (!copyText.trim() || !detail) return;
+    setSaving(true);
+    try {
+      const title =
+        (detail.title && detail.title.slice(0, 40)) ||
+        copyText.replace(/^标题[:：]\s*/m, '').split('\n')[0].slice(0, 40) ||
+        '案例宣传文案';
+      const res = await fetch('/api/promo/copies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, content: copyText, feedIds: [], feedSnapshot: [] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || '保存失败');
+      MessagePlugin.success('已保存到「推广神器 → 我的文案」');
+    } catch (e: any) {
+      MessagePlugin.error(e?.message || '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  }, [copyText, detail]);
+
   // 详情视图
   if (detail) {
     return (
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-4xl mx-auto">
           <div className="flex items-center justify-between mb-4">
-            <Button variant="text" icon={<ChevronLeftIcon />} onClick={() => setDetail(null)}>
+            <Button variant="text" icon={<ChevronLeftIcon />} onClick={closeDetail}>
               返回列表
             </Button>
-            <Popconfirm content="确定删除该案例？" onConfirm={() => handleDelete(detail.id)}>
-              <Button variant="outline" theme="danger" icon={<DeleteIcon />}>
-                删除
+            <div className="flex items-center gap-2">
+              <Button
+                theme="primary"
+                icon={<Megaphone size={16} />}
+                loading={generating}
+                onClick={handleGenerate}
+              >
+                一键生成宣传文案
               </Button>
-            </Popconfirm>
+              <Popconfirm content="确定删除该案例？" onConfirm={() => handleDelete(detail.id)}>
+                <Button variant="outline" theme="danger" icon={<DeleteIcon />}>
+                  删除
+                </Button>
+              </Popconfirm>
+            </div>
           </div>
           <h2 className="text-lg font-semibold mb-1" style={{ color: 'var(--td-text-color-primary)' }}>
             {detail.title}
@@ -79,6 +201,43 @@ export function CaseLibraryPage() {
             {new Date(detail.createdAt).toLocaleString('zh-CN')}
             {detail.note ? ` · ${detail.note}` : ''}
           </div>
+
+          {/* 宣传文案（生成结果展示在推荐结果上方） */}
+          {(generating || copyText) && (
+            <div className="admin-card p-4 mb-5">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-semibold" style={{ color: 'var(--td-text-color-primary)' }}>
+                  小红书文案{generating ? '（生成中…）' : ''}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="small"
+                    variant="outline"
+                    disabled={!copyText.trim() || generating}
+                    onClick={() => handleCopyToClipboard(copyText)}
+                  >
+                    复制
+                  </Button>
+                  <Button
+                    size="small"
+                    theme="primary"
+                    loading={saving}
+                    disabled={!copyText.trim() || generating}
+                    onClick={handleSave}
+                  >
+                    保存
+                  </Button>
+                </div>
+              </div>
+              <div
+                className="text-sm whitespace-pre-wrap leading-relaxed"
+                style={{ color: 'var(--td-text-color-primary)' }}
+              >
+                {copyText || '正在生成…'}
+              </div>
+            </div>
+          )}
+
           <RecommendResult result={detail.result} />
         </div>
       </div>

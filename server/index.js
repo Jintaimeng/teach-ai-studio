@@ -82,6 +82,10 @@ import fs from "fs";
 import { exec } from "child_process";
 import { promisify } from "util";
 import * as db from "./db.js";
+import { generateVibeReport } from "./services/school-report.js";
+import { generateTiaojiReport } from "./services/tiaoji-report.js";
+import { querySchoolScore, getYears, isYanbotConfigured, YanbotApiError, } from "./yanbotClient.js";
+import { ensureMcpReady, queryFeeds, getFeedsByIds, querySchoolScores, listScoreYears, listScoreLevels, } from "./yanbotMcp.js";
 var execAsync = promisify(exec);
 var pendingPermissions = new Map();
 // 权限请求超时时间（5分钟）
@@ -1375,6 +1379,850 @@ app.post("/api/chat", function (req, res) { return __awaiter(void 0, void 0, voi
                 }
                 return [3 /*break*/, 30];
             case 30: return [2 /*return*/];
+        }
+    });
+}); });
+// ============= 志愿填报报告 API（择校 / 调剂）=============
+/** 轻量手写校验（避免引入 zod）。考研模型：分数 + 专业/地区/层次，无文理选科。 */
+function parseVibeInput(body) {
+    if (!body || typeof body !== "object")
+        return { ok: false, message: "invalid payload" };
+    var b = body;
+    var score = b.score;
+    if (typeof score !== "number" || !Number.isInteger(score) || score < 100 || score > 500) {
+        return { ok: false, message: "score 必须是 100-500 之间的整数（考研初试总分）" };
+    }
+    var toStringArray = function (v) {
+        if (v == null)
+            return undefined;
+        if (!Array.isArray(v))
+            return undefined;
+        var arr = v.filter(function (x) { return typeof x === "string" && x.trim().length > 0; });
+        return arr.length ? arr : undefined;
+    };
+    var level = typeof b.level === "string" && b.level.trim() ? b.level.trim() : null;
+    return {
+        ok: true,
+        data: {
+            score: score,
+            majorKeywords: toStringArray(b.majorKeywords),
+            regionPrefs: toStringArray(b.regionPrefs),
+            level: level,
+        },
+    };
+}
+// 择校报告（取数参考 recommend 模块：yanbot 开放接口 · 一志愿录取分数）
+app.post("/api/tools/school-report/vibe", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var parsed, data, err_1, message;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                parsed = parseVibeInput(req.body);
+                if (!parsed.ok) {
+                    return [2 /*return*/, res.json({ code: 1, success: false, message: parsed.message })];
+                }
+                if (!isYanbotConfigured()) {
+                    return [2 /*return*/, res.json({
+                            code: 1,
+                            success: false,
+                            message: "未配置 yanbot 开放接口凭据，请在 .env 设置 OPEN_API_KEY 与 OPEN_API_SECRET 后重启服务",
+                        })];
+                }
+                _a.label = 1;
+            case 1:
+                _a.trys.push([1, 3, , 4]);
+                return [4 /*yield*/, generateVibeReport(parsed.data)];
+            case 2:
+                data = _a.sent();
+                res.json({ code: 0, success: true, data: data });
+                return [3 /*break*/, 4];
+            case 3:
+                err_1 = _a.sent();
+                console.error("[school-report/vibe]", err_1);
+                message = err_1 instanceof YanbotApiError ? err_1.message : (err_1 === null || err_1 === void 0 ? void 0 : err_1.message) || "服务暂时不可用，请稍后重试";
+                res.status(500).json({ code: 1, success: false, message: message });
+                return [3 /*break*/, 4];
+            case 4: return [2 /*return*/];
+        }
+    });
+}); });
+// 调剂报告（取数参考 recommend 模块：yanbot 开放接口 · 调剂录取分数）
+app.post("/api/tools/tiaoji-report/vibe", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var parsed, data, err_2, message;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                parsed = parseVibeInput(req.body);
+                if (!parsed.ok) {
+                    return [2 /*return*/, res.json({ code: 1, success: false, message: parsed.message })];
+                }
+                if (!isYanbotConfigured()) {
+                    return [2 /*return*/, res.json({
+                            code: 1,
+                            success: false,
+                            message: "未配置 yanbot 开放接口凭据，请在 .env 设置 OPEN_API_KEY 与 OPEN_API_SECRET 后重启服务",
+                        })];
+                }
+                _a.label = 1;
+            case 1:
+                _a.trys.push([1, 3, , 4]);
+                return [4 /*yield*/, generateTiaojiReport(parsed.data)];
+            case 2:
+                data = _a.sent();
+                res.json({ code: 0, success: true, data: data });
+                return [3 /*break*/, 4];
+            case 3:
+                err_2 = _a.sent();
+                console.error("[tiaoji-report/vibe]", err_2);
+                message = err_2 instanceof YanbotApiError ? err_2.message : (err_2 === null || err_2 === void 0 ? void 0 : err_2.message) || "服务暂时不可用，请稍后重试";
+                res.status(500).json({ code: 1, success: false, message: message });
+                return [3 /*break*/, 4];
+            case 4: return [2 /*return*/];
+        }
+    });
+}); });
+var cachedLatestYear = null;
+function defaultBand(score) {
+    var s = typeof score === "number" && score > 0 ? score : 330;
+    return { firstMin: s - 20, firstMax: s + 10, adjustMax: s + 5 };
+}
+function extractJson(text) {
+    if (!text)
+        return null;
+    // 优先解析 ```json ... ``` 或第一个 {...}
+    var fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    var candidate = fenced ? fenced[1] : text;
+    var start = candidate.indexOf("{");
+    var end = candidate.lastIndexOf("}");
+    if (start === -1 || end === -1 || end <= start)
+        return null;
+    try {
+        return JSON.parse(candidate.slice(start, end + 1));
+    }
+    catch (_a) {
+        return null;
+    }
+}
+var RECOMMEND_PARSE_PROMPT = "\u4F60\u662F\u8003\u7814\u5FD7\u613F\u63A8\u8350\u7684\u9700\u6C42\u89E3\u6790\u5668\u3002\u8BF7\u628A\u8001\u5E08\u7684\u81EA\u7136\u8BED\u8A00\u9700\u6C42\u89E3\u6790\u4E3A JSON\uFF0C\u4EC5\u8F93\u51FA JSON\uFF0C\u4E0D\u8981\u4EFB\u4F55\u591A\u4F59\u6587\u5B57\u3001\u89E3\u91CA\u6216 markdown\u3002\n\n\u8F93\u51FA\u5B57\u6BB5\uFF1A\n{\n  \"score\": \u6570\u5B57\u6216 null,            // \u8003\u751F\u9884\u4F30\u603B\u5206\uFF08\u8003\u7814\u521D\u8BD5\u603B\u5206\uFF0C\u901A\u5E38 250-450\uFF09\n  \"subjectName\": \u5B57\u7B26\u4E32\u6216\u7701\u7565,      // \u62A5\u8003\u4E13\u4E1A\u540D\u79F0\u5173\u952E\u8BCD\uFF08\u5982 \"\u8BA1\u7B97\u673A\" \"\u6CD5\u5F8B\"\uFF09\n  \"provinceName\": \u5B57\u7B26\u4E32\u6216\u7701\u7565,     // \u76EE\u6807\u5730\u533A/\u7701\u4EFD\uFF08\u5982 \"\u6C5F\u82CF\" \"\u5317\u4EAC\"\uFF09\n  \"level\": \"\u53CC\u4E00\u6D41\"|\"211\"|\"985\"|null, // \u9662\u6821\u5C42\u6B21\u8981\u6C42\uFF0C\u65E0\u5219 null\n  \"targetSchoolName\": \u5B57\u7B26\u4E32\u6216\u7701\u7565, // \u660E\u786E\u70B9\u540D\u7684\u76EE\u6807\u9662\u6821\n  \"year\": \u6570\u5B57\u6216 null,             // \u6307\u5B9A\u5E74\u4EFD\uFF0C\u672A\u63D0\u53CA\u4E3A null\n  \"note\": \u5B57\u7B26\u4E32\u6216\u7701\u7565             // \u5BF9\u9700\u6C42\u7684\u4E00\u53E5\u8BDD\u5F52\u7EB3\n}\n\u53EA\u8FD4\u56DE\u4E0A\u8FF0 JSON \u5BF9\u8C61\u3002";
+function parseNlToQuery(message) {
+    return __awaiter(this, void 0, void 0, function () {
+        var model, stream, text, _a, stream_3, stream_3_1, msg, content, _i, content_2, block, r, e_3_1, parsed, score;
+        var _b, e_3, _c, _d;
+        var _e;
+        return __generator(this, function (_f) {
+            switch (_f.label) {
+                case 0:
+                    model = process.env.RECOMMEND_MODEL || defaultModel;
+                    stream = query({
+                        prompt: message,
+                        options: {
+                            cwd: process.cwd(),
+                            model: model,
+                            maxTurns: 1,
+                            permissionMode: "bypassPermissions",
+                            includePartialMessages: false,
+                            systemPrompt: RECOMMEND_PARSE_PROMPT,
+                            env: getSdkEnv(),
+                            stderr: function (data) { return console.log("[Recommend parse stderr] ".concat(data.trim())); },
+                        },
+                    });
+                    text = "";
+                    _f.label = 1;
+                case 1:
+                    _f.trys.push([1, , 14, 16]);
+                    _f.label = 2;
+                case 2:
+                    _f.trys.push([2, 7, 8, 13]);
+                    _a = true, stream_3 = __asyncValues(stream);
+                    _f.label = 3;
+                case 3: return [4 /*yield*/, stream_3.next()];
+                case 4:
+                    if (!(stream_3_1 = _f.sent(), _b = stream_3_1.done, !_b)) return [3 /*break*/, 6];
+                    _d = stream_3_1.value;
+                    _a = false;
+                    msg = _d;
+                    if (msg.type === "assistant") {
+                        content = (_e = msg.message) === null || _e === void 0 ? void 0 : _e.content;
+                        if (typeof content === "string") {
+                            text += content;
+                        }
+                        else if (Array.isArray(content)) {
+                            for (_i = 0, content_2 = content; _i < content_2.length; _i++) {
+                                block = content_2[_i];
+                                if (block.type === "text")
+                                    text += block.text;
+                            }
+                        }
+                    }
+                    else if (msg.type === "result") {
+                        r = msg.result;
+                        if (typeof r === "string" && r.trim())
+                            text = r;
+                        return [3 /*break*/, 6];
+                    }
+                    _f.label = 5;
+                case 5:
+                    _a = true;
+                    return [3 /*break*/, 3];
+                case 6: return [3 /*break*/, 13];
+                case 7:
+                    e_3_1 = _f.sent();
+                    e_3 = { error: e_3_1 };
+                    return [3 /*break*/, 13];
+                case 8:
+                    _f.trys.push([8, , 11, 12]);
+                    if (!(!_a && !_b && (_c = stream_3.return))) return [3 /*break*/, 10];
+                    return [4 /*yield*/, _c.call(stream_3)];
+                case 9:
+                    _f.sent();
+                    _f.label = 10;
+                case 10: return [3 /*break*/, 12];
+                case 11:
+                    if (e_3) throw e_3.error;
+                    return [7 /*endfinally*/];
+                case 12: return [7 /*endfinally*/];
+                case 13: return [3 /*break*/, 16];
+                case 14: return [4 /*yield*/, stream.interrupt().catch(function () { return undefined; })];
+                case 15:
+                    _f.sent();
+                    return [7 /*endfinally*/];
+                case 16:
+                    parsed = extractJson(text) || {};
+                    score = typeof parsed.score === "number" ? parsed.score : Number(parsed.score) || null;
+                    return [2 /*return*/, {
+                            score: score,
+                            subjectName: parsed.subjectName || undefined,
+                            provinceName: parsed.provinceName || undefined,
+                            level: parsed.level || null,
+                            targetSchoolName: parsed.targetSchoolName || undefined,
+                            year: typeof parsed.year === "number" ? parsed.year : null,
+                            band: defaultBand(score),
+                            note: parsed.note || undefined,
+                        }];
+            }
+        });
+    });
+}
+function resolveYear(year) {
+    return __awaiter(this, void 0, void 0, function () {
+        var years, e_4;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    if (year)
+                        return [2 /*return*/, year];
+                    if (cachedLatestYear)
+                        return [2 /*return*/, cachedLatestYear];
+                    _a.label = 1;
+                case 1:
+                    _a.trys.push([1, 3, , 4]);
+                    return [4 /*yield*/, getYears()];
+                case 2:
+                    years = _a.sent();
+                    if (years.length > 0) {
+                        cachedLatestYear = years[0];
+                        return [2 /*return*/, cachedLatestYear];
+                    }
+                    return [3 /*break*/, 4];
+                case 3:
+                    e_4 = _a.sent();
+                    console.warn("[Recommend] 获取最新年份失败，忽略 year 过滤");
+                    return [3 /*break*/, 4];
+                case 4: return [2 /*return*/, undefined];
+            }
+        });
+    });
+}
+function schoolTags(record) {
+    var s = record.school;
+    var level = (record.level || (s === null || s === void 0 ? void 0 : s.level) || "").toString();
+    return {
+        is985: Boolean(s === null || s === void 0 ? void 0 : s.is985) || /985/.test(level),
+        is211: Boolean(s === null || s === void 0 ? void 0 : s.is211) || /211/.test(level),
+        isDualClass: Boolean(s === null || s === void 0 ? void 0 : s.isDual_class) || /双一流/.test(level),
+    };
+}
+function tierForDiff(diff) {
+    if (diff < 0)
+        return "冲";
+    if (diff <= 10)
+        return "稳";
+    return "保";
+}
+function toFirstChoiceCard(r, score) {
+    var _a;
+    var tags = schoolTags(r);
+    var diff = typeof score === "number" && typeof r.lowestScore === "number" ? score - r.lowestScore : undefined;
+    return __assign({ schoolName: r.schoolName, schoolCode: r.schoolCode, level: r.level || ((_a = r.school) === null || _a === void 0 ? void 0 : _a.level), provinceName: r.provinceName, subjectName: r.subjectName, subjectCode: r.subjectCode, college: r.college, year: r.year, lowestScore: r.lowestScore, averageScore: r.averageScore, highestScore: r.highestScore, admissions: r.firstChoiceAdmissions, applicants: r.applicants, remarks: r.remarks, scoreDiff: diff, tier: typeof diff === "number" ? tierForDiff(diff) : undefined }, tags);
+}
+function toAdjustedCard(r, score) {
+    var _a;
+    var tags = schoolTags(r);
+    var diff = typeof score === "number" && typeof r.adjustedLowestScore === "number"
+        ? score - r.adjustedLowestScore
+        : undefined;
+    return __assign({ schoolName: r.schoolName, schoolCode: r.schoolCode, level: r.level || ((_a = r.school) === null || _a === void 0 ? void 0 : _a.level), provinceName: r.provinceName, subjectName: r.subjectName, subjectCode: r.subjectCode, college: r.college, year: r.year, lowestScore: r.adjustedLowestScore, averageScore: r.adjustedAverageScore, highestScore: r.adjustedHighestScore, admissions: r.adjustedAdmissions, applicants: r.applicants, remarks: r.adjustedRemarks, scoreDiff: diff }, tags);
+}
+function runRecommendation(pq) {
+    return __awaiter(this, void 0, void 0, function () {
+        var year, common, _a, firstData, adjustData, firstItems, adjustItems;
+        var _b;
+        return __generator(this, function (_c) {
+            switch (_c.label) {
+                case 0: return [4 /*yield*/, resolveYear(pq.year)];
+                case 1:
+                    year = _c.sent();
+                    common = {
+                        subjectName: pq.subjectName,
+                        provinceName: pq.provinceName,
+                        level: pq.level || undefined,
+                        schoolName: pq.targetSchoolName,
+                        year: year,
+                        includeSchool: true,
+                    };
+                    return [4 /*yield*/, Promise.all([
+                            querySchoolScore(__assign(__assign({}, common), { hasFirstChoice: true, minLowestScore: pq.band.firstMin, maxLowestScore: pq.band.firstMax, sortBy: "lowestScore", sortOrder: "desc", pageSize: 12 })),
+                            querySchoolScore(__assign(__assign({}, common), { hasAdjustment: true, maxAdjustedLowestScore: pq.band.adjustMax, sortBy: "adjustedLowestScore", sortOrder: "desc", pageSize: 8 })),
+                        ])];
+                case 2:
+                    _a = _c.sent(), firstData = _a[0], adjustData = _a[1];
+                    firstItems = (firstData.list || []).map(function (r) { return toFirstChoiceCard(r, pq.score); });
+                    adjustItems = (adjustData.list || []).map(function (r) { return toAdjustedCard(r, pq.score); });
+                    return [2 /*return*/, {
+                            parsedQuery: __assign(__assign({}, pq), { year: (_b = year !== null && year !== void 0 ? year : pq.year) !== null && _b !== void 0 ? _b : null }),
+                            groups: [
+                                { category: "一志愿", items: firstItems },
+                                { category: "调剂", items: adjustItems },
+                            ],
+                            note: pq.note,
+                        }];
+            }
+        });
+    });
+}
+// 推荐：自然语言解析 + 两路检索 + 归一化（或按快捷筛选增量重查）
+app.post("/api/recommend", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var _a, message, prevQuery, filterDelta, pq, band, result, error_13;
+    return __generator(this, function (_b) {
+        switch (_b.label) {
+            case 0:
+                if (!isYanbotConfigured()) {
+                    return [2 /*return*/, res.status(500).json({
+                            error: "未配置 yanbot 开放接口凭据，请在 .env 设置 OPEN_API_KEY 与 OPEN_API_SECRET 后重启服务",
+                        })];
+                }
+                _a = req.body, message = _a.message, prevQuery = _a.prevQuery, filterDelta = _a.filterDelta;
+                _b.label = 1;
+            case 1:
+                _b.trys.push([1, 6, , 7]);
+                pq = void 0;
+                if (!(prevQuery && filterDelta)) return [3 /*break*/, 2];
+                band = {
+                    firstMin: prevQuery.band.firstMin + (filterDelta.firstMinDelta || 0),
+                    firstMax: prevQuery.band.firstMax + (filterDelta.firstMaxDelta || 0),
+                    adjustMax: prevQuery.band.adjustMax + (filterDelta.adjustMaxDelta || 0),
+                };
+                pq = __assign(__assign({}, prevQuery), { band: band, level: filterDelta.level !== undefined ? filterDelta.level : prevQuery.level });
+                return [3 /*break*/, 4];
+            case 2:
+                if (!message || !message.trim()) {
+                    return [2 /*return*/, res.status(400).json({ error: "请输入考生信息与需求" })];
+                }
+                console.log("[Recommend] \u89E3\u6790\u9700\u6C42: ".concat(message.slice(0, 80)));
+                return [4 /*yield*/, parseNlToQuery(message)];
+            case 3:
+                pq = _b.sent();
+                _b.label = 4;
+            case 4: return [4 /*yield*/, runRecommendation(pq)];
+            case 5:
+                result = _b.sent();
+                res.json(result);
+                return [3 /*break*/, 7];
+            case 6:
+                error_13 = _b.sent();
+                if (error_13 instanceof YanbotApiError) {
+                    console.error("[Recommend] yanbot 接口错误:", error_13.message);
+                    return [2 /*return*/, res.status(error_13.statusCode >= 400 ? error_13.statusCode : 502).json({ error: error_13.message })];
+                }
+                console.error("[Recommend] 失败:", error_13);
+                res.status(500).json({ error: (error_13 === null || error_13 === void 0 ? void 0 : error_13.message) || "推荐失败" });
+                return [3 /*break*/, 7];
+            case 7: return [2 /*return*/];
+        }
+    });
+}); });
+// ============= 案例收藏 API =============
+app.get("/api/cases", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var rows, cases, error_14;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                return [4 /*yield*/, db.getAllFavoriteCases()];
+            case 1:
+                rows = _a.sent();
+                cases = rows.map(function (r) { return ({
+                    id: r.id,
+                    title: r.title,
+                    candidateSummary: r.candidate_summary,
+                    note: r.note,
+                    createdAt: r.created_at,
+                }); });
+                res.json({ cases: cases });
+                return [3 /*break*/, 3];
+            case 2:
+                error_14 = _a.sent();
+                res.status(500).json({ error: (error_14 === null || error_14 === void 0 ? void 0 : error_14.message) || "获取案例失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+app.get("/api/cases/:id", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var row, error_15;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                return [4 /*yield*/, db.getFavoriteCase(req.params.id)];
+            case 1:
+                row = _a.sent();
+                if (!row)
+                    return [2 /*return*/, res.status(404).json({ error: "案例不存在" })];
+                res.json({
+                    id: row.id,
+                    title: row.title,
+                    candidateSummary: row.candidate_summary,
+                    note: row.note,
+                    createdAt: row.created_at,
+                    query: JSON.parse(row.query_json),
+                    result: JSON.parse(row.result_json),
+                });
+                return [3 /*break*/, 3];
+            case 2:
+                error_15 = _a.sent();
+                res.status(500).json({ error: (error_15 === null || error_15 === void 0 ? void 0 : error_15.message) || "获取案例失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+app.post("/api/cases", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var _a, title, candidateSummary, q, result, note, now, item, error_16;
+    return __generator(this, function (_b) {
+        switch (_b.label) {
+            case 0:
+                _b.trys.push([0, 2, , 3]);
+                _a = req.body || {}, title = _a.title, candidateSummary = _a.candidateSummary, q = _a.query, result = _a.result, note = _a.note;
+                if (!q || !result) {
+                    return [2 /*return*/, res.status(400).json({ error: "缺少 query 或 result" })];
+                }
+                now = new Date().toISOString();
+                item = {
+                    id: uuidv4(),
+                    title: (title && String(title).slice(0, 100)) || "未命名案例",
+                    candidate_summary: candidateSummary ? String(candidateSummary).slice(0, 200) : null,
+                    query_json: JSON.stringify(q),
+                    result_json: JSON.stringify(result),
+                    note: note ? String(note) : null,
+                    created_at: now,
+                };
+                return [4 /*yield*/, db.createFavoriteCase(item)];
+            case 1:
+                _b.sent();
+                res.json({ id: item.id, success: true });
+                return [3 /*break*/, 3];
+            case 2:
+                error_16 = _b.sent();
+                res.status(500).json({ error: (error_16 === null || error_16 === void 0 ? void 0 : error_16.message) || "收藏失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+app.delete("/api/cases/:id", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var error_17;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                return [4 /*yield*/, db.deleteFavoriteCase(req.params.id)];
+            case 1:
+                _a.sent();
+                res.json({ success: true });
+                return [3 /*break*/, 3];
+            case 2:
+                error_17 = _a.sent();
+                res.status(500).json({ error: (error_17 === null || error_17 === void 0 ? void 0 : error_17.message) || "删除失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+// ============= 推广神器 API（基于 yanbot MCP 资讯数据） =============
+var PROMO_PROMPT = "\u4F60\u662F\u8D44\u6DF1\u7684\u8003\u7814/\u6559\u80B2\u884C\u4E1A\u8FD0\u8425\u6587\u6848\u5199\u624B\u3002\u8BF7\u6839\u636E\u7528\u6237\u63D0\u4F9B\u7684\u3010\u7814bot \u8D44\u8BAF\u7D20\u6750\u3011\uFF0C\u64B0\u5199\u4E00\u6BB5\u53EF\u76F4\u63A5\u53D1\u5E03\u5230\u793E\u4EA4\u5A92\u4F53\u6216\u516C\u4F17\u53F7\u7684\u4E2D\u6587\u5BA3\u4F20\u6587\u6848\u3002\n\n\u8981\u6C42\uFF1A\n1. \u5148\u7ED9\u51FA\u4E00\u4E2A\u6709\u5438\u5F15\u529B\u7684\u6807\u9898\uFF08\u5355\u72EC\u4E00\u884C\uFF0C\u4EE5\"\u6807\u9898\uFF1A\"\u5F00\u5934\uFF09\u3002\n2. \u6B63\u6587\u6761\u7406\u6E05\u6670\u3001\u8BED\u6C14\u79EF\u6781\u4E13\u4E1A\uFF0C\u7A81\u51FA\u8D44\u8BAF\u4E2D\u7684\u5173\u952E\u4FE1\u606F\u4E0E\u4EF7\u503C\u70B9\uFF0C\u5F15\u5BFC\u8BFB\u8005\u5173\u6CE8\u3002\n3. \u7ED3\u5C3E\u53EF\u9644 2~4 \u4E2A\u76F8\u5173\u8BDD\u9898\u6807\u7B7E\uFF08\u4EE5 # \u5F00\u5934\uFF09\u3002\n4. \u4E25\u683C\u57FA\u4E8E\u7ED9\u5B9A\u7D20\u6750\uFF0C\u4E0D\u8981\u675C\u64B0\u9662\u6821\u540D\u79F0\u3001\u5206\u6570\u3001\u65E5\u671F\u7B49\u4E8B\u5B9E\u6570\u636E\uFF1B\u7D20\u6750\u4FE1\u606F\u4E0D\u8DB3\u65F6\u4E0D\u8981\u7F16\u9020\u3002\n5. \u76F4\u63A5\u8F93\u51FA\u6587\u6848\u6B63\u6587\uFF0C\u4E0D\u8981\u8F93\u51FA\"\u597D\u7684\"\"\u4EE5\u4E0B\u662F\"\u7B49\u591A\u4F59\u8BF4\u660E\uFF0C\u4E5F\u4E0D\u8981\u4F7F\u7528\u4EE3\u7801\u5757\u5305\u88F9\u3002";
+function buildPromoMaterial(feeds) {
+    return feeds
+        .map(function (f, i) {
+        var _a;
+        var source = ((_a = f.feedMeta) === null || _a === void 0 ? void 0 : _a.title) ? "\uFF08\u6765\u6E90\uFF1A".concat(f.feedMeta.title, "\uFF09") : "";
+        var date = f.isoDate ? "\n\u53D1\u5E03\u65F6\u95F4\uFF1A".concat(f.isoDate) : "";
+        var tags = Array.isArray(f.tags) && f.tags.length ? "\n\u6807\u7B7E\uFF1A".concat(f.tags.join("、")) : "";
+        var bodyRaw = f.content || f.contentSnippet || f.summary || "";
+        var body = bodyRaw ? "\n\u5185\u5BB9\uFF1A".concat(String(bodyRaw).slice(0, 800)) : "";
+        var link = f.link ? "\n\u539F\u6587\u94FE\u63A5\uFF1A".concat(f.link) : "";
+        return "\u3010\u8D44\u8BAF ".concat(i + 1, "\u3011").concat(f.title || "无标题").concat(source).concat(date).concat(tags).concat(body).concat(link);
+    })
+        .join("\n\n");
+}
+// 资讯列表
+app.get("/api/promo/feeds", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var page, pageSize, keyword, data, error_18;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                page = Number(req.query.page) || 1;
+                pageSize = Math.min(Number(req.query.pageSize) || 20, 100);
+                keyword = typeof req.query.keyword === "string" ? req.query.keyword : undefined;
+                return [4 /*yield*/, queryFeeds({ page: page, pageSize: pageSize, keyword: keyword })];
+            case 1:
+                data = _a.sent();
+                res.json({ list: data.list || [], pagination: data.pagination });
+                return [3 /*break*/, 3];
+            case 2:
+                error_18 = _a.sent();
+                console.error("[promo/feeds]", error_18);
+                res.status(502).json({ error: (error_18 === null || error_18 === void 0 ? void 0 : error_18.message) || "获取资讯失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+// 数据 tab：考研院校专业历年录取数据（筛选项）
+app.get("/api/promo/scores/meta", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var _a, years, levels, error_19;
+    return __generator(this, function (_b) {
+        switch (_b.label) {
+            case 0:
+                _b.trys.push([0, 3, , 4]);
+                return [4 /*yield*/, ensureMcpReady()];
+            case 1:
+                _b.sent();
+                return [4 /*yield*/, Promise.all([
+                        listScoreYears().catch(function () { return []; }),
+                        listScoreLevels().catch(function () { return []; }),
+                    ])];
+            case 2:
+                _a = _b.sent(), years = _a[0], levels = _a[1];
+                res.json({ years: years, levels: levels });
+                return [3 /*break*/, 4];
+            case 3:
+                error_19 = _b.sent();
+                console.error("[promo/scores/meta]", error_19);
+                res.status(502).json({ error: (error_19 === null || error_19 === void 0 ? void 0 : error_19.message) || "获取筛选项失败" });
+                return [3 /*break*/, 4];
+            case 4: return [2 /*return*/];
+        }
+    });
+}); });
+// 数据 tab：考研院校专业历年录取分数线列表
+app.get("/api/promo/scores", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var q, subjectRaw, params, data, error_20;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 3, , 4]);
+                return [4 /*yield*/, ensureMcpReady()];
+            case 1:
+                _a.sent();
+                q = req.query;
+                subjectRaw = typeof q.subject === "string" ? q.subject.trim() : "";
+                params = {
+                    schoolName: typeof q.schoolName === "string" ? q.schoolName : undefined,
+                    year: q.year ? Number(q.year) : undefined,
+                    level: typeof q.level === "string" ? q.level : undefined,
+                    studyForm: typeof q.studyForm === "string" ? q.studyForm : undefined,
+                    minLowestScore: q.minLowestScore ? Number(q.minLowestScore) : undefined,
+                    page: q.page ? Number(q.page) : 1,
+                    pageSize: Math.min(q.pageSize ? Number(q.pageSize) : 20, 50),
+                    sortBy: typeof q.sortBy === "string" ? q.sortBy : "lowestScore",
+                    sortOrder: q.sortOrder === "asc" ? "asc" : "desc",
+                };
+                // 专业：6 位数字按代码，否则按名称
+                if (subjectRaw) {
+                    if (/^\d{6}$/.test(subjectRaw))
+                        params.subjectCode = subjectRaw;
+                    else
+                        params.subjectName = subjectRaw;
+                }
+                return [4 /*yield*/, querySchoolScores(params)];
+            case 2:
+                data = _a.sent();
+                res.json({ list: data.list || [], pagination: data.pagination });
+                return [3 /*break*/, 4];
+            case 3:
+                error_20 = _a.sent();
+                console.error("[promo/scores]", error_20);
+                res.status(502).json({ error: (error_20 === null || error_20 === void 0 ? void 0 : error_20.message) || "获取录取数据失败" });
+                return [3 /*break*/, 4];
+            case 4: return [2 /*return*/];
+        }
+    });
+}); });
+// 一键生成宣传文案（SSE 流式）
+app.post("/api/promo/generate", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var _a, feedIds, feedSnapshot, model, stream, closed, write, feeds, material, selectedModel, fullText, _b, stream_4, stream_4_1, msg, event_2, delta, content, _i, content_3, block, r, e_5_1, error_21;
+    var _c, e_5, _d, _e;
+    var _f, _g;
+    return __generator(this, function (_h) {
+        switch (_h.label) {
+            case 0:
+                _a = (req.body || {}), feedIds = _a.feedIds, feedSnapshot = _a.feedSnapshot, model = _a.model;
+                if (!Array.isArray(feedIds) || feedIds.length === 0) {
+                    return [2 /*return*/, res.status(400).json({ error: "请至少选择一条资讯" })];
+                }
+                res.setHeader("Content-Type", "text/event-stream");
+                res.setHeader("Cache-Control", "no-cache");
+                res.setHeader("Connection", "keep-alive");
+                (_f = res.flushHeaders) === null || _f === void 0 ? void 0 : _f.call(res);
+                stream = null;
+                closed = false;
+                write = function (obj) {
+                    if (!closed)
+                        res.write("data: ".concat(JSON.stringify(obj), "\n\n"));
+                };
+                _h.label = 1;
+            case 1:
+                _h.trys.push([1, 16, 17, 20]);
+                return [4 /*yield*/, ensureMcpReady()];
+            case 2:
+                _h.sent();
+                return [4 /*yield*/, getFeedsByIds(feedIds)];
+            case 3:
+                feeds = _h.sent();
+                // 兜底：MCP 未取到内容时用前端传来的快照
+                if ((!feeds || feeds.length === 0) && Array.isArray(feedSnapshot) && feedSnapshot.length) {
+                    feeds = feedSnapshot;
+                }
+                if (!feeds || feeds.length === 0) {
+                    write({ type: "error", message: "未能获取选中的资讯内容，请重试" });
+                    return [2 /*return*/, res.end()];
+                }
+                material = buildPromoMaterial(feeds);
+                selectedModel = model || defaultModel;
+                stream = query({
+                    prompt: "\u3010\u7814bot \u8D44\u8BAF\u7D20\u6750\u3011\n\n".concat(material, "\n\n\u8BF7\u6839\u636E\u4EE5\u4E0A\u8D44\u8BAF\u64B0\u5199\u5BA3\u4F20\u6587\u6848\u3002"),
+                    options: {
+                        cwd: process.cwd(),
+                        model: selectedModel,
+                        maxTurns: 1,
+                        permissionMode: "bypassPermissions",
+                        includePartialMessages: true,
+                        systemPrompt: PROMO_PROMPT,
+                        env: getSdkEnv(),
+                        stderr: function (data) { return console.log("[promo/generate stderr] ".concat(data.trim())); },
+                    },
+                });
+                fullText = "";
+                write({ type: "init", feedCount: feeds.length, model: selectedModel });
+                _h.label = 4;
+            case 4:
+                _h.trys.push([4, 9, 10, 15]);
+                _b = true, stream_4 = __asyncValues(stream);
+                _h.label = 5;
+            case 5: return [4 /*yield*/, stream_4.next()];
+            case 6:
+                if (!(stream_4_1 = _h.sent(), _c = stream_4_1.done, !_c)) return [3 /*break*/, 8];
+                _e = stream_4_1.value;
+                _b = false;
+                msg = _e;
+                if (closed)
+                    return [3 /*break*/, 8];
+                if (msg.type === "stream_event") {
+                    event_2 = msg.event;
+                    if ((event_2 === null || event_2 === void 0 ? void 0 : event_2.type) === "content_block_delta") {
+                        delta = event_2.delta;
+                        if ((delta === null || delta === void 0 ? void 0 : delta.type) === "text_delta" && delta.text) {
+                            fullText += delta.text;
+                            write({ type: "text", content: delta.text });
+                        }
+                    }
+                }
+                else if (msg.type === "assistant") {
+                    content = (_g = msg.message) === null || _g === void 0 ? void 0 : _g.content;
+                    if (!fullText) {
+                        if (typeof content === "string") {
+                            fullText += content;
+                            write({ type: "text", content: content });
+                        }
+                        else if (Array.isArray(content)) {
+                            for (_i = 0, content_3 = content; _i < content_3.length; _i++) {
+                                block = content_3[_i];
+                                if (block.type === "text" && block.text) {
+                                    fullText += block.text;
+                                    write({ type: "text", content: block.text });
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (msg.type === "result") {
+                    r = msg.result;
+                    if (!fullText && typeof r === "string" && r.trim()) {
+                        fullText = r;
+                        write({ type: "text", content: r });
+                    }
+                    return [3 /*break*/, 8];
+                }
+                else if (msg.type === "error") {
+                    write({ type: "error", message: msg.error || "生成失败" });
+                    return [3 /*break*/, 8];
+                }
+                _h.label = 7;
+            case 7:
+                _b = true;
+                return [3 /*break*/, 5];
+            case 8: return [3 /*break*/, 15];
+            case 9:
+                e_5_1 = _h.sent();
+                e_5 = { error: e_5_1 };
+                return [3 /*break*/, 15];
+            case 10:
+                _h.trys.push([10, , 13, 14]);
+                if (!(!_b && !_c && (_d = stream_4.return))) return [3 /*break*/, 12];
+                return [4 /*yield*/, _d.call(stream_4)];
+            case 11:
+                _h.sent();
+                _h.label = 12;
+            case 12: return [3 /*break*/, 14];
+            case 13:
+                if (e_5) throw e_5.error;
+                return [7 /*endfinally*/];
+            case 14: return [7 /*endfinally*/];
+            case 15:
+                write({ type: "done", fullText: fullText });
+                res.end();
+                return [3 /*break*/, 20];
+            case 16:
+                error_21 = _h.sent();
+                console.error("[promo/generate]", error_21);
+                write({ type: "error", message: (error_21 === null || error_21 === void 0 ? void 0 : error_21.message) || "生成失败" });
+                res.end();
+                return [3 /*break*/, 20];
+            case 17:
+                closed = true;
+                if (!stream) return [3 /*break*/, 19];
+                return [4 /*yield*/, stream.interrupt().catch(function () { return undefined; })];
+            case 18:
+                _h.sent();
+                _h.label = 19;
+            case 19: return [7 /*endfinally*/];
+            case 20: return [2 /*return*/];
+        }
+    });
+}); });
+// 已保存文案：列表
+app.get("/api/promo/copies", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var rows, copies, error_22;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                return [4 /*yield*/, db.getAllPromoCopies()];
+            case 1:
+                rows = _a.sent();
+                copies = rows.map(function (r) { return ({
+                    id: r.id,
+                    title: r.title,
+                    content: r.content,
+                    feedIds: r.feed_ids ? JSON.parse(r.feed_ids) : [],
+                    feedSnapshot: r.feed_snapshot ? JSON.parse(r.feed_snapshot) : [],
+                    favorite: !!r.favorite,
+                    createdAt: r.created_at,
+                }); });
+                res.json({ copies: copies });
+                return [3 /*break*/, 3];
+            case 2:
+                error_22 = _a.sent();
+                res.status(500).json({ error: (error_22 === null || error_22 === void 0 ? void 0 : error_22.message) || "获取文案失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+// 已保存文案：保存
+app.post("/api/promo/copies", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var _a, title, content, feedIds, feedSnapshot, now, item, error_23;
+    return __generator(this, function (_b) {
+        switch (_b.label) {
+            case 0:
+                _b.trys.push([0, 2, , 3]);
+                _a = req.body || {}, title = _a.title, content = _a.content, feedIds = _a.feedIds, feedSnapshot = _a.feedSnapshot;
+                if (!content || !String(content).trim()) {
+                    return [2 /*return*/, res.status(400).json({ error: "文案内容为空" })];
+                }
+                now = new Date().toISOString();
+                item = {
+                    id: uuidv4(),
+                    title: (title && String(title).slice(0, 100)) || "未命名文案",
+                    content: String(content),
+                    feed_ids: Array.isArray(feedIds) ? JSON.stringify(feedIds) : null,
+                    feed_snapshot: feedSnapshot ? JSON.stringify(feedSnapshot) : null,
+                    favorite: 0,
+                    created_at: now,
+                };
+                return [4 /*yield*/, db.createPromoCopy(item)];
+            case 1:
+                _b.sent();
+                res.json({ id: item.id, success: true });
+                return [3 /*break*/, 3];
+            case 2:
+                error_23 = _b.sent();
+                res.status(500).json({ error: (error_23 === null || error_23 === void 0 ? void 0 : error_23.message) || "保存失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+// 已保存文案：切换收藏
+app.patch("/api/promo/copies/:id", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var favorite, error_24;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                favorite = (req.body || {}).favorite;
+                return [4 /*yield*/, db.setPromoCopyFavorite(req.params.id, !!favorite)];
+            case 1:
+                _a.sent();
+                res.json({ success: true });
+                return [3 /*break*/, 3];
+            case 2:
+                error_24 = _a.sent();
+                res.status(500).json({ error: (error_24 === null || error_24 === void 0 ? void 0 : error_24.message) || "更新失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+// 已保存文案：删除
+app.delete("/api/promo/copies/:id", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var error_25;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                return [4 /*yield*/, db.deletePromoCopy(req.params.id)];
+            case 1:
+                _a.sent();
+                res.json({ success: true });
+                return [3 /*break*/, 3];
+            case 2:
+                error_25 = _a.sent();
+                res.status(500).json({ error: (error_25 === null || error_25 === void 0 ? void 0 : error_25.message) || "删除失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
         }
     });
 }); });
