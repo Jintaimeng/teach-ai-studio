@@ -227,7 +227,7 @@ export function VoiceSearchPage() {
         {/* 标题 */}
         <div className="text-center shrink-0">
           <h2 className="text-xl font-semibold mb-1" style={{ color: 'var(--td-text-color-primary)' }}>
-            语音速查 · 言出法随
+            言出法随
           </h2>
           <p className="text-sm" style={{ color: 'var(--td-text-color-secondary)' }}>
             直播答疑时，按住空格说话，边说边检索关键录取数据

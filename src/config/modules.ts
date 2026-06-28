@@ -84,7 +84,7 @@ export const MODULES: ModuleDef[] = [
   },
   {
     id: 'voice-search',
-    label: '语音速查',
+    label: '言出法随',
     icon: 'Mic',
     path: '/voice-search',
     type: 'page',
