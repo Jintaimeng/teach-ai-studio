@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>超级教师工作台 · 路演 PPT</title>
+  <style>
+    :root {
+      /* 项目主题色（TDesign indigo） */
+      --brand: #4f46e5;
+      --brand-hover: #6366f1;
+      --brand-active: #4338ca;
+      --brand2: #6366f1;
+      --accent: #818cf8;
+      --ink: #171717;
+      --grey: #737373;
+      --paper: #ffffff;
+      --line: #e5e5e5;
+      --soft: #f5f5f5;
+      --brand-light: rgba(79, 70, 229, .1);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    html,
+    body {
+      height: 100%;
+    }
+
+    body {
+      font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      background: #1a1f2b;
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+
+    /* ---- deck / slide ---- */
+    .deck {
+      width: 100%;
+      max-width: 1280px;
+    }
+
+    .slide {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16/9;
+      background: var(--paper);
+      border-radius: 18px;
+      overflow: hidden;
+      display: none;
+      padding: 64px 72px;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, .45);
+    }
+
+    .slide.active {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .pageno {
+      position: absolute;
+      right: 30px;
+      bottom: 22px;
+      font-size: 13px;
+      color: #bdbdbd;
+      letter-spacing: 1px;
+    }
+
+    .kicker {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 3px;
+      color: var(--brand);
+      text-transform: uppercase;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      font-size: 54px;
+      line-height: 1.15;
+      font-weight: 800;
+      letter-spacing: -1px;
+    }
+
+    h2 {
+      font-size: 36px;
+      font-weight: 800;
+      letter-spacing: -.5px;
+      margin-bottom: 6px;
+    }
+
+    .sub {
+      font-size: 18px;
+      color: var(--grey);
+      font-weight: 500;
+    }
+
+    .grad {
+      background: linear-gradient(110deg, var(--brand), var(--brand2) 55%, var(--accent));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .topbar {
+      height: 5px;
+      width: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      background: linear-gradient(90deg, var(--brand), var(--brand2), var(--accent));
+    }
+
+    /* ---- cover ---- */
+    .cover {
+      justify-content: center;
+      background: radial-gradient(120% 120% at 0% 0%, #eef0ff 0%, #fff 42%);
+    }
+
+    .cover .logo {
+      width: 78px;
+      height: 78px;
+      border-radius: 20px;
+      background: linear-gradient(135deg, var(--brand), var(--brand2));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-size: 40px;
+      font-weight: 800;
+      margin-bottom: 30px;
+      box-shadow: 0 14px 30px rgba(79, 70, 229, .35);
+    }
+
+    .cover .oneline {
+      margin-top: 26px;
+      font-size: 21px;
+      color: #404040;
+      max-width: 760px;
+      line-height: 1.6;
+    }
+
+    .cover .tags {
+      margin-top: 34px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .tag {
+      padding: 8px 16px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      font-size: 14px;
+      color: #475569;
+      background: #fff;
+    }
+
+    /* ---- layout helpers ---- */
+    .body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      margin-top: 8px;
+    }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 22px;
+    }
+
+    .grid3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+
+    .grid4 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 18px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 22px 24px;
+      background: #fff;
+      transition: .2s;
+    }
+
+    .card .ico {
+      font-size: 26px;
+      margin-bottom: 10px;
+    }
+
+    .card h3 {
+      font-size: 19px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .card p {
+      font-size: 15px;
+      color: var(--grey);
+      line-height: 1.6;
+    }
+
+    .soft {
+      background: var(--soft);
+      border-color: transparent;
+    }
+
+    /* problem table */
+    .ptable {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0 12px;
+    }
+
+    .ptable td {
+      padding: 16px 20px;
+      font-size: 16px;
+      vertical-align: top;
+    }
+
+    .ptable tr {
+      background: var(--soft);
+    }
+
+    .ptable td:first-child {
+      border-radius: 12px 0 0 12px;
+      font-weight: 700;
+      white-space: nowrap;
+      width: 170px;
+      color: var(--ink);
+    }
+
+    .ptable td:nth-child(2) {
+      color: var(--grey);
+    }
+
+    .ptable td:last-child {
+      border-radius: 0 12px 12px 0;
+      color: var(--brand);
+      font-weight: 600;
+    }
+
+    .arrow {
+      color: #d4d4d4;
+      padding: 0 6px;
+    }
+
+    /* arch diagram */
+    .arch {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      align-items: center;
+      margin-top: 4px;
+    }
+
+    .layer {
+      width: 100%;
+      border-radius: 14px;
+      padding: 16px 22px;
+      text-align: center;
+      font-weight: 700;
+      color: #fff;
+      font-size: 17px;
+    }
+
+    .l-fe {
+      background: linear-gradient(90deg, var(--brand), var(--accent));
+    }
+
+    .l-be {
+      background: #262626;
+    }
+
+    .pillrow {
+      display: flex;
+      gap: 12px;
+      width: 100%;
+    }
+
+    .pill {
+      flex: 1;
+      background: #fff;
+      border: 1.5px solid var(--line);
+      border-radius: 12px;
+      padding: 13px 10px;
+      text-align: center;
+      font-size: 14px;
+      color: #334155;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+
+    .pill small {
+      display: block;
+      color: var(--grey);
+      font-weight: 400;
+      font-size: 12px;
+      margin-top: 3px;
+    }
+
+    .vline {
+      height: 18px;
+      width: 2px;
+      background: #d4d4d4;
+    }
+
+    /* data-chain */
+    .flow {
+      display: flex;
+      align-items: stretch;
+      gap: 14px;
+      margin-top: 10px;
+    }
+
+    .fnode {
+      flex: 1;
+      border-radius: 16px;
+      padding: 22px 18px;
+      text-align: center;
+      border: 1.5px solid var(--line);
+    }
+
+    .fnode .t {
+      font-size: 17px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .fnode .d {
+      font-size: 14px;
+      color: var(--grey);
+      line-height: 1.55;
+    }
+
+    .fnode.ai {
+      background: #eef0ff;
+      border-color: #d4d8ff;
+    }
+
+    .fnode.data {
+      background: #f5f5f5;
+      border-color: #e0e0e0;
+    }
+
+    .fnode.out {
+      background: var(--brand-light);
+      border-color: #c7c2f5;
+    }
+
+    .farr {
+      display: flex;
+      align-items: center;
+      font-size: 26px;
+      color: #d4d4d4;
+    }
+
+    .note {
+      margin-top: 16px;
+      font-size: 16px;
+      text-align: center;
+      color: #334155;
+      background: var(--soft);
+      padding: 13px;
+      border-radius: 12px;
+    }
+
+    .note b {
+      color: var(--brand);
+    }
+
+    /* tech-stack strip merged into MOAT slide */
+    .archstrip {
+      margin-top: 20px;
+      padding-top: 18px;
+      border-top: 1px dashed var(--line);
+    }
+
+    .archhead {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+
+    .archlabel {
+      flex: 0 0 auto;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      color: var(--brand);
+      background: var(--brand-light);
+      padding: 5px 12px;
+      border-radius: 999px;
+    }
+
+    .archstack {
+      font-size: 14px;
+      color: var(--grey);
+      font-weight: 500;
+    }
+
+    /* summary */
+    .stable {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0 10px;
+    }
+
+    .stable td {
+      padding: 14px 22px;
+      font-size: 17px;
+    }
+
+    .stable tr {
+      background: var(--soft);
+    }
+
+    .stable td:first-child {
+      font-weight: 700;
+      width: 160px;
+      border-radius: 12px 0 0 12px;
+    }
+
+    .stable td:last-child {
+      border-radius: 0 12px 12px 0;
+      color: #404040;
+    }
+
+    /* ---- closing slide ---- */
+    .closing-slide {
+      justify-content: center;
+      background: radial-gradient(120% 120% at 0% 0%, #eef0ff 0%, #fff 55%);
+    }
+
+    .closing-grid {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 48px;
+      align-items: center;
+    }
+
+    .closing-left {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .closing {
+      font-size: 32px;
+      font-weight: 800;
+      line-height: 1.55;
+      letter-spacing: -.5px;
+    }
+
+    .closing-sub {
+      margin-top: 26px;
+      font-size: 16px;
+      color: var(--grey);
+      letter-spacing: .5px;
+    }
+
+    .closing-right {
+      display: flex;
+      justify-content: center;
+    }
+
+    .qrcard {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 16px 40px rgba(79, 70, 229, .14);
+      text-align: center;
+    }
+
+    .qrimg {
+      width: 188px;
+      height: 188px;
+      display: block;
+      border-radius: 10px;
+    }
+
+    .qrtip {
+      margin-top: 12px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--brand);
+      letter-spacing: 1px;
+    }
+
+    .contactbar {
+      position: absolute;
+      left: 72px;
+      right: 72px;
+      bottom: 40px;
+      display: flex;
+      align-items: center;
+      gap: 22px;
+      padding: 18px 26px;
+      background: var(--soft);
+      border-radius: 14px;
+    }
+
+    .cperson {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+
+    .cname {
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--ink);
+      letter-spacing: .5px;
+    }
+
+    .crole {
+      font-size: 14px;
+      color: var(--grey);
+    }
+
+    .cdiv {
+      width: 1px;
+      height: 26px;
+      background: var(--line);
+    }
+
+    .citem {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .clabel {
+      font-size: 12px;
+      color: var(--grey);
+      letter-spacing: 1px;
+    }
+
+    .cval {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+
+    .clink {
+      color: var(--brand);
+      text-decoration: none;
+    }
+
+    .clink:hover {
+      text-decoration: underline;
+    }
+
+    /* steps */
+    .steps {
+      counter-reset: s;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin-top: 6px;
+    }
+
+    .step {
+      display: flex;
+      gap: 18px;
+      align-items: center;
+      background: var(--soft);
+      border-radius: 14px;
+      padding: 16px 22px;
+    }
+
+    .step .n {
+      counter-increment: s;
+      flex: 0 0 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--brand), var(--brand2));
+      color: #fff;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .step .n::before {
+      content: counter(s);
+    }
+
+    .step .tx {
+      font-size: 17px;
+    }
+
+    .step .tx b {
+      color: var(--ink);
+    }
+
+    .step .tx span {
+      color: var(--grey);
+    }
+
+    .hi {
+      display: inline-block;
+      background: var(--brand-light);
+      color: var(--brand-active);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 2px 9px;
+      border-radius: 6px;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+
+    /* nav */
+    .nav {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      z-index: 50;
+    }
+
+    .nav button {
+      border: none;
+      background: rgba(255, 255, 255, .14);
+      color: #fff;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      font-size: 18px;
+      cursor: pointer;
+      backdrop-filter: blur(6px);
+    }
+
+    .nav button:hover {
+      background: rgba(255, 255, 255, .3);
+    }
+
+    .nav .ind {
+      color: #d4d4d4;
+      font-size: 14px;
+      min-width: 54px;
+      text-align: center;
+      letter-spacing: 1px;
+    }
+
+    @media print {
+      @page {
+        size: 1280px 720px;
+        margin: 0;
+      }
+
+      body {
+        background: #fff;
+      }
+
+      .nav {
+        display: none;
+      }
+
+      .deck {
+        max-width: none;
+      }
+
+      .slide {
+        display: flex !important;
+        page-break-after: always;
+        border-radius: 0;
+        box-shadow: none;
+        margin: 0;
+        width: 100vw;
+        height: 100vh;
+        aspect-ratio: auto;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="deck">
+
+    <!-- 1 COVER -->
+    <section class="slide cover active">
+      <div class="topbar"></div>
+      <div class="logo">超</div>
+      <div class="kicker">AI 教育 · 路演</div>
+      <h1>超级教师工作台</h1>
+      <p class="oneline">面向独立教师的 AI 全链路工作台——把<b>服务、答疑、直播、招生推广</b>用一个产品打通，<span class="grad"
+          style="font-weight:700">所有结论都来自真实数据，而非模型臆测。</span></p>
+      <div class="tags">
+        <span class="tag">对话式生成</span>
+        <span class="tag">真实数据</span>
+        <span class="tag">实时语音检索</span>
+        <span class="tag">Agent 基座</span>
+      </div>
+      <div class="pageno">01 / 05</div>
+    </section>
+
+    <!-- 2 PROBLEM -->
+    <section class="slide">
+      <div class="topbar"></div>
+      <div class="kicker">我们解决什么问题</div>
+      <h2>独立老师的日常，今天割裂而低效</h2>
+      <p class="sub">四个高频场景，一个产品全部打通</p>
+      <div class="body">
+        <table class="ptable">
+          <tr>
+            <td>给学生择校</td>
+            <td>翻 Excel、查官网、拍脑袋</td>
+            <td>对话式「冲/稳/保」分层报告</td>
+          </tr>
+          <tr>
+            <td>指导调剂</td>
+            <td>信息差大、政策乱、时间紧</td>
+            <td>一键生成调剂 / 征集方案</td>
+          </tr>
+          <tr>
+            <td>直播答疑</td>
+            <td>被问具体分数线现查现卡壳</td>
+            <td>「言出法随」说话即检索</td>
+          </tr>
+          <tr>
+            <td>招生推广</td>
+            <td>手写文案、追不上行业资讯</td>
+            <td>研bot 资讯一键生成文案</td>
+          </tr>
+        </table>
+      </div>
+      <div class="pageno">02 / 05</div>
+    </section>
+
+    <!-- 4 HIGHLIGHTS -->
+    <section class="slide">
+      <div class="topbar"></div>
+      <div class="kicker">核心功能亮点</div>
+      <h2>不止于「问答」，而是把活干完</h2>
+      <div class="body">
+        <div class="grid4">
+          <div class="card">
+            <h3>🎓 择校 / 调剂报告</h3>
+            <p>自然语言描述考生 → AI 追问补全 → 拉取真实「一志愿录取最低分」按分差分层。<b style="color:var(--brand)">纯数据计算，无幻觉。</b></p>
+          </div>
+          <div class="card">
+            <h3>🎯 志愿推荐 · 双模式</h3>
+            <p>智能档大模型解析意图，快档本地正则秒回；快捷重查不走大模型，省时省钱。</p>
+          </div>
+          <div class="card" style="border-color:#d4d8ff;background:#f7f8ff;">
+            <h3>🎤 言出法随 <span class="hi">杀手锏</span></h3>
+            <p>直播按住说话，火山引擎流式 ASR，话音未落数据已弹出，告别现查现卡壳。</p>
+          </div>
+          <div class="card">
+            <h3>📢 推广神器</h3>
+            <p>MCP 接入研bot资讯，勾选即流式生成宣传文案，可保存复用，闭环招生。</p>
+          </div>
+        </div>
+      </div>
+      <div class="pageno">03 / 05</div>
+    </section>
+
+    <!-- 5 DATA-CHAIN (MOAT) + ARCHITECTURE -->
+    <section class="slide">
+      <div class="topbar"></div>
+      <div class="kicker">差异化护城河 · 技术架构</div>
+      <h2>大模型负责理解与表达，数据负责事实</h2>
+      <p class="sub">这是我们与「纯大模型问答工具」最大的区别</p>
+      <div class="body">
+        <div class="flow">
+          <div class="fnode ai">
+            <div class="t">大模型</div>
+            <div class="d">只负责<br>理解意图</div>
+          </div>
+          <div class="farr">→</div>
+          <div class="fnode data">
+            <div class="t">研bot 真实数据</div>
+            <div class="d">历年录取分数<br>签名鉴权接口</div>
+          </div>
+          <div class="farr">→</div>
+          <div class="fnode data">
+            <div class="t">规则引擎</div>
+            <div class="d">冲 / 稳 / 保<br>按分差分层</div>
+          </div>
+          <div class="farr">→</div>
+          <div class="fnode out">
+            <div class="t">可溯源报告</div>
+            <div class="d">分数 + 理由<br>院校标签</div>
+          </div>
+        </div>
+        <div class="note">大模型<b>永远不编造分数</b>——它只做擅长的（理解 / 表达），数字交给真实数据。</div>
+
+        <div class="archstrip">
+          <div class="archhead">
+            <span class="archlabel">技术架构</span>
+            <span class="archstack">React 18 + TDesign 前端　·　Express / TypeScript 后端　·　SSE 流式</span>
+          </div>
+          <div class="pillrow">
+            <div class="pill">Agent 基座<small>对话 / 工具 / 权限</small></div>
+            <div class="pill">研bot 开放接口<small>真实录取数据</small></div>
+            <div class="pill">火山引擎 ASR<small>实时语音识别</small></div>
+            <div class="pill">MCP · 研bot<small>行业资讯</small></div>
+            <div class="pill">sql.js SQLite<small>会话 / 案例持久化</small></div>
+          </div>
+        </div>
+      </div>
+      <div class="pageno">04 / 05</div>
+    </section>
+
+    <!-- 9 CLOSING -->
+    <section class="slide closing-slide">
+      <div class="topbar"></div>
+      <div class="closing-grid">
+        <div class="closing-left">
+          <div class="kicker">愿景</div>
+          <div class="closing">
+            让每一个教师<br>
+            都拥有一支 <span class="grad">数据团队</span>、<br>
+            一个 <span class="grad">文案团队</span> 和一个 <span class="grad">直播助手</span>。
+          </div>
+          <p class="closing-sub">超级教师工作台 · AI 驱动的智能教学工作台</p>
+        </div>
+        <div class="closing-right">
+          <div class="qrcard">
+            <img src="qrcode.jpg" alt="联系二维码" class="qrimg" />
+            <div class="qrtip">扫码联系 · 微信</div>
+          </div>
+        </div>
+      </div>
+      <div class="contactbar">
+        <div class="cperson">
+          <span class="cname">WiLL</span>
+          <span class="crole">独立开发者</span>
+        </div>
+        <span class="cdiv"></span>
+        <div class="citem"><span class="clabel">产品</span><span class="cval">研bot · 考研 Agent</span></div>
+        <span class="cdiv"></span>
+        <div class="citem"><span class="clabel">开源贡献</span><span class="cval">Nuxt · RSSHub</span></div>
+        <span class="cdiv"></span>
+        <div class="citem"><span class="clabel">GitHub</span><a class="cval clink" href="https://github.com/niuyi1017"
+            target="_blank" rel="noreferrer">github.com/niuyi1017</a></div>
+      </div>
+      <div class="pageno">05 / 05</div>
+    </section>
+
+  </div>
+
+  <div class="nav">
+    <button id="prev">‹</button>
+    <span class="ind" id="ind">1 / 5</span>
+    <button id="next">›</button>
+  </div>
+
+  <script>
+    const slides = [...document.querySelectorAll('.slide')];
+    let i = 0;
+    const ind = document.getElementById('ind');
+    function show(n) {
+      i = (n + slides.length) % slides.length;
+      slides.forEach((s, k) => s.classList.toggle('active', k === i));
+      ind.textContent = (i + 1) + ' / ' + slides.length;
+    }
+    document.getElementById('next').onclick = () => show(i + 1);
+    document.getElementById('prev').onclick = () => show(i - 1);
+    document.addEventListener('keydown', e => {
+      if (['ArrowRight', 'ArrowDown', ' ', 'PageDown'].includes(e.key)) { e.preventDefault(); show(i + 1); }
+      if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.key)) { e.preventDefault(); show(i - 1); }
+    });
+  </script>
+</body>
+
+</html>
