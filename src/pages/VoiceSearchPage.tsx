@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Input, MessagePlugin } from 'tdesign-react';
 import { RecommendResult as RecommendResultType } from '../types';
-import { useLiveSpeech } from '../hooks/useLiveSpeech';
+import { useVolcAsr } from '../hooks/useVolcAsr';
 import { VoiceOrb, OrbPhase } from '../components/VoiceOrb';
 import { LiveSchoolCard } from '../components/LiveSchoolCard';
 
-/** 直播速查：每组最多展示的卡片数，保持画面紧凑 */
-const MAX_PER_GROUP = 6;
+/** 直播速查：只看一志愿前 3 个，画面紧凑 */
+const MAX_PER_GROUP = 3;
 const EXAMPLES = [
   '四百分 想去上海的法律硕士 最好是211',
   '三百五 计算机 江苏 冲一冲',
@@ -62,7 +62,9 @@ function ResultBody({ result }: { result: RecommendResultType }) {
         </div>
       )}
       <ConditionTags result={result} />
-      {result.groups.map((group) => {
+      {result.groups
+        .filter((group) => group.category === '一志愿')
+        .map((group) => {
         const items = group.items.slice(0, MAX_PER_GROUP);
         return (
           <div key={group.category}>
@@ -101,7 +103,7 @@ function ResultBody({ result }: { result: RecommendResultType }) {
 }
 
 export function VoiceSearchPage() {
-  const { supported, listening, transcript, start, stop, reset } = useLiveSpeech();
+  const { supported, listening, transcript, start, stop, reset, error: asrError } = useVolcAsr();
 
   const [result, setResult] = useState<RecommendResultType | null>(null);
   const [prevResult, setPrevResult] = useState<RecommendResultType | null>(null);
@@ -111,6 +113,7 @@ export function VoiceSearchPage() {
 
   const seqRef = useRef(0);
   const lastQueriedRef = useRef('');
+  const lastFireRef = useRef(0);
   const resultRef = useRef<RecommendResultType | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
   const transcriptRef = useRef('');
@@ -130,9 +133,9 @@ export function VoiceSearchPage() {
   }, []);
 
   const fireSearch = useCallback(
-    async (raw: string) => {
+    async (raw: string, opts?: { fast?: boolean }) => {
       const text = raw.trim();
-      if (text.length < 4) return;
+      if (text.length < 3) return;
       if (text === lastQueriedRef.current) return;
       lastQueriedRef.current = text;
       const my = ++seqRef.current;
@@ -142,7 +145,7 @@ export function VoiceSearchPage() {
         const res = await fetch('/api/recommend', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text }),
+          body: JSON.stringify({ message: text, fast: opts?.fast ?? false }),
         });
         const data = await res.json();
         if (my !== seqRef.current) return; // 已被更新的请求取代
@@ -160,11 +163,23 @@ export function VoiceSearchPage() {
     [applyResult]
   );
 
-  // 转写文本变化 → 防抖检索
+  // 转写文本变化 → 节流快档检索（连续说话也持续出结果，不必等停顿/松手）
   useEffect(() => {
     if (!transcript) return;
+    const THROTTLE_MS = 450;
+    const now = Date.now();
+    const since = now - lastFireRef.current;
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => fireSearch(transcript), 600);
+    if (since >= THROTTLE_MS) {
+      lastFireRef.current = now;
+      fireSearch(transcript, { fast: true });
+    } else {
+      // 距上次触发未到节流间隔 → 排一个尾随触发，用最新文本
+      debounceRef.current = setTimeout(() => {
+        lastFireRef.current = Date.now();
+        fireSearch(transcriptRef.current, { fast: true });
+      }, THROTTLE_MS - since);
+    }
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
@@ -190,7 +205,11 @@ export function VoiceSearchPage() {
       stop();
       if (debounceRef.current) clearTimeout(debounceRef.current);
       const finalText = transcriptRef.current;
-      if (finalText) window.setTimeout(() => fireSearch(finalText), 50);
+      if (finalText) {
+        // 重置去重，确保即使与最后一次快档同文也再跑一次 LLM 精档
+        lastQueriedRef.current = '';
+        window.setTimeout(() => fireSearch(finalText, { fast: false }), 50);
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
@@ -262,12 +281,12 @@ export function VoiceSearchPage() {
           </div>
         )}
 
-        {error && (
+        {(error || asrError) && (
           <div
             className="text-sm px-3 py-2 rounded-lg text-center mb-4"
             style={{ backgroundColor: 'rgba(245,108,108,0.1)', color: '#e5484d' }}
           >
-            {error}
+            {asrError || error}
           </div>
         )}
 
