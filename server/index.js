@@ -85,6 +85,7 @@ import * as db from "./db.js";
 import { generateVibeReport } from "./services/school-report.js";
 import { generateTiaojiReport } from "./services/tiaoji-report.js";
 import { querySchoolScore, getYears, isYanbotConfigured, YanbotApiError, } from "./yanbotClient.js";
+import { ensureMcpReady, queryFeeds, getFeedsByIds, querySchoolScores, listScoreYears, listScoreLevels, } from "./yanbotMcp.js";
 var execAsync = promisify(exec);
 var pendingPermissions = new Map();
 // 权限请求超时时间（5分钟）
@@ -1853,6 +1854,373 @@ app.delete("/api/cases/:id", function (req, res) { return __awaiter(void 0, void
             case 2:
                 error_17 = _a.sent();
                 res.status(500).json({ error: (error_17 === null || error_17 === void 0 ? void 0 : error_17.message) || "删除失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+// ============= 推广神器 API（基于 yanbot MCP 资讯数据） =============
+var PROMO_PROMPT = "\u4F60\u662F\u8D44\u6DF1\u7684\u8003\u7814/\u6559\u80B2\u884C\u4E1A\u8FD0\u8425\u6587\u6848\u5199\u624B\u3002\u8BF7\u6839\u636E\u7528\u6237\u63D0\u4F9B\u7684\u3010\u7814bot \u8D44\u8BAF\u7D20\u6750\u3011\uFF0C\u64B0\u5199\u4E00\u6BB5\u53EF\u76F4\u63A5\u53D1\u5E03\u5230\u793E\u4EA4\u5A92\u4F53\u6216\u516C\u4F17\u53F7\u7684\u4E2D\u6587\u5BA3\u4F20\u6587\u6848\u3002\n\n\u8981\u6C42\uFF1A\n1. \u5148\u7ED9\u51FA\u4E00\u4E2A\u6709\u5438\u5F15\u529B\u7684\u6807\u9898\uFF08\u5355\u72EC\u4E00\u884C\uFF0C\u4EE5\"\u6807\u9898\uFF1A\"\u5F00\u5934\uFF09\u3002\n2. \u6B63\u6587\u6761\u7406\u6E05\u6670\u3001\u8BED\u6C14\u79EF\u6781\u4E13\u4E1A\uFF0C\u7A81\u51FA\u8D44\u8BAF\u4E2D\u7684\u5173\u952E\u4FE1\u606F\u4E0E\u4EF7\u503C\u70B9\uFF0C\u5F15\u5BFC\u8BFB\u8005\u5173\u6CE8\u3002\n3. \u7ED3\u5C3E\u53EF\u9644 2~4 \u4E2A\u76F8\u5173\u8BDD\u9898\u6807\u7B7E\uFF08\u4EE5 # \u5F00\u5934\uFF09\u3002\n4. \u4E25\u683C\u57FA\u4E8E\u7ED9\u5B9A\u7D20\u6750\uFF0C\u4E0D\u8981\u675C\u64B0\u9662\u6821\u540D\u79F0\u3001\u5206\u6570\u3001\u65E5\u671F\u7B49\u4E8B\u5B9E\u6570\u636E\uFF1B\u7D20\u6750\u4FE1\u606F\u4E0D\u8DB3\u65F6\u4E0D\u8981\u7F16\u9020\u3002\n5. \u76F4\u63A5\u8F93\u51FA\u6587\u6848\u6B63\u6587\uFF0C\u4E0D\u8981\u8F93\u51FA\"\u597D\u7684\"\"\u4EE5\u4E0B\u662F\"\u7B49\u591A\u4F59\u8BF4\u660E\uFF0C\u4E5F\u4E0D\u8981\u4F7F\u7528\u4EE3\u7801\u5757\u5305\u88F9\u3002";
+function buildPromoMaterial(feeds) {
+    return feeds
+        .map(function (f, i) {
+        var _a;
+        var source = ((_a = f.feedMeta) === null || _a === void 0 ? void 0 : _a.title) ? "\uFF08\u6765\u6E90\uFF1A".concat(f.feedMeta.title, "\uFF09") : "";
+        var date = f.isoDate ? "\n\u53D1\u5E03\u65F6\u95F4\uFF1A".concat(f.isoDate) : "";
+        var tags = Array.isArray(f.tags) && f.tags.length ? "\n\u6807\u7B7E\uFF1A".concat(f.tags.join("、")) : "";
+        var bodyRaw = f.content || f.contentSnippet || f.summary || "";
+        var body = bodyRaw ? "\n\u5185\u5BB9\uFF1A".concat(String(bodyRaw).slice(0, 800)) : "";
+        var link = f.link ? "\n\u539F\u6587\u94FE\u63A5\uFF1A".concat(f.link) : "";
+        return "\u3010\u8D44\u8BAF ".concat(i + 1, "\u3011").concat(f.title || "无标题").concat(source).concat(date).concat(tags).concat(body).concat(link);
+    })
+        .join("\n\n");
+}
+// 资讯列表
+app.get("/api/promo/feeds", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var page, pageSize, keyword, data, error_18;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                page = Number(req.query.page) || 1;
+                pageSize = Math.min(Number(req.query.pageSize) || 20, 100);
+                keyword = typeof req.query.keyword === "string" ? req.query.keyword : undefined;
+                return [4 /*yield*/, queryFeeds({ page: page, pageSize: pageSize, keyword: keyword })];
+            case 1:
+                data = _a.sent();
+                res.json({ list: data.list || [], pagination: data.pagination });
+                return [3 /*break*/, 3];
+            case 2:
+                error_18 = _a.sent();
+                console.error("[promo/feeds]", error_18);
+                res.status(502).json({ error: (error_18 === null || error_18 === void 0 ? void 0 : error_18.message) || "获取资讯失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+// 数据 tab：考研院校专业历年录取数据（筛选项）
+app.get("/api/promo/scores/meta", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var _a, years, levels, error_19;
+    return __generator(this, function (_b) {
+        switch (_b.label) {
+            case 0:
+                _b.trys.push([0, 3, , 4]);
+                return [4 /*yield*/, ensureMcpReady()];
+            case 1:
+                _b.sent();
+                return [4 /*yield*/, Promise.all([
+                        listScoreYears().catch(function () { return []; }),
+                        listScoreLevels().catch(function () { return []; }),
+                    ])];
+            case 2:
+                _a = _b.sent(), years = _a[0], levels = _a[1];
+                res.json({ years: years, levels: levels });
+                return [3 /*break*/, 4];
+            case 3:
+                error_19 = _b.sent();
+                console.error("[promo/scores/meta]", error_19);
+                res.status(502).json({ error: (error_19 === null || error_19 === void 0 ? void 0 : error_19.message) || "获取筛选项失败" });
+                return [3 /*break*/, 4];
+            case 4: return [2 /*return*/];
+        }
+    });
+}); });
+// 数据 tab：考研院校专业历年录取分数线列表
+app.get("/api/promo/scores", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var q, subjectRaw, params, data, error_20;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 3, , 4]);
+                return [4 /*yield*/, ensureMcpReady()];
+            case 1:
+                _a.sent();
+                q = req.query;
+                subjectRaw = typeof q.subject === "string" ? q.subject.trim() : "";
+                params = {
+                    schoolName: typeof q.schoolName === "string" ? q.schoolName : undefined,
+                    year: q.year ? Number(q.year) : undefined,
+                    level: typeof q.level === "string" ? q.level : undefined,
+                    studyForm: typeof q.studyForm === "string" ? q.studyForm : undefined,
+                    minLowestScore: q.minLowestScore ? Number(q.minLowestScore) : undefined,
+                    page: q.page ? Number(q.page) : 1,
+                    pageSize: Math.min(q.pageSize ? Number(q.pageSize) : 20, 50),
+                    sortBy: typeof q.sortBy === "string" ? q.sortBy : "lowestScore",
+                    sortOrder: q.sortOrder === "asc" ? "asc" : "desc",
+                };
+                // 专业：6 位数字按代码，否则按名称
+                if (subjectRaw) {
+                    if (/^\d{6}$/.test(subjectRaw))
+                        params.subjectCode = subjectRaw;
+                    else
+                        params.subjectName = subjectRaw;
+                }
+                return [4 /*yield*/, querySchoolScores(params)];
+            case 2:
+                data = _a.sent();
+                res.json({ list: data.list || [], pagination: data.pagination });
+                return [3 /*break*/, 4];
+            case 3:
+                error_20 = _a.sent();
+                console.error("[promo/scores]", error_20);
+                res.status(502).json({ error: (error_20 === null || error_20 === void 0 ? void 0 : error_20.message) || "获取录取数据失败" });
+                return [3 /*break*/, 4];
+            case 4: return [2 /*return*/];
+        }
+    });
+}); });
+// 一键生成宣传文案（SSE 流式）
+app.post("/api/promo/generate", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var _a, feedIds, feedSnapshot, model, stream, closed, write, feeds, material, selectedModel, fullText, _b, stream_4, stream_4_1, msg, event_2, delta, content, _i, content_3, block, r, e_5_1, error_21;
+    var _c, e_5, _d, _e;
+    var _f, _g;
+    return __generator(this, function (_h) {
+        switch (_h.label) {
+            case 0:
+                _a = (req.body || {}), feedIds = _a.feedIds, feedSnapshot = _a.feedSnapshot, model = _a.model;
+                if (!Array.isArray(feedIds) || feedIds.length === 0) {
+                    return [2 /*return*/, res.status(400).json({ error: "请至少选择一条资讯" })];
+                }
+                res.setHeader("Content-Type", "text/event-stream");
+                res.setHeader("Cache-Control", "no-cache");
+                res.setHeader("Connection", "keep-alive");
+                (_f = res.flushHeaders) === null || _f === void 0 ? void 0 : _f.call(res);
+                stream = null;
+                closed = false;
+                write = function (obj) {
+                    if (!closed)
+                        res.write("data: ".concat(JSON.stringify(obj), "\n\n"));
+                };
+                _h.label = 1;
+            case 1:
+                _h.trys.push([1, 16, 17, 20]);
+                return [4 /*yield*/, ensureMcpReady()];
+            case 2:
+                _h.sent();
+                return [4 /*yield*/, getFeedsByIds(feedIds)];
+            case 3:
+                feeds = _h.sent();
+                // 兜底：MCP 未取到内容时用前端传来的快照
+                if ((!feeds || feeds.length === 0) && Array.isArray(feedSnapshot) && feedSnapshot.length) {
+                    feeds = feedSnapshot;
+                }
+                if (!feeds || feeds.length === 0) {
+                    write({ type: "error", message: "未能获取选中的资讯内容，请重试" });
+                    return [2 /*return*/, res.end()];
+                }
+                material = buildPromoMaterial(feeds);
+                selectedModel = model || defaultModel;
+                stream = query({
+                    prompt: "\u3010\u7814bot \u8D44\u8BAF\u7D20\u6750\u3011\n\n".concat(material, "\n\n\u8BF7\u6839\u636E\u4EE5\u4E0A\u8D44\u8BAF\u64B0\u5199\u5BA3\u4F20\u6587\u6848\u3002"),
+                    options: {
+                        cwd: process.cwd(),
+                        model: selectedModel,
+                        maxTurns: 1,
+                        permissionMode: "bypassPermissions",
+                        includePartialMessages: true,
+                        systemPrompt: PROMO_PROMPT,
+                        env: getSdkEnv(),
+                        stderr: function (data) { return console.log("[promo/generate stderr] ".concat(data.trim())); },
+                    },
+                });
+                fullText = "";
+                write({ type: "init", feedCount: feeds.length, model: selectedModel });
+                _h.label = 4;
+            case 4:
+                _h.trys.push([4, 9, 10, 15]);
+                _b = true, stream_4 = __asyncValues(stream);
+                _h.label = 5;
+            case 5: return [4 /*yield*/, stream_4.next()];
+            case 6:
+                if (!(stream_4_1 = _h.sent(), _c = stream_4_1.done, !_c)) return [3 /*break*/, 8];
+                _e = stream_4_1.value;
+                _b = false;
+                msg = _e;
+                if (closed)
+                    return [3 /*break*/, 8];
+                if (msg.type === "stream_event") {
+                    event_2 = msg.event;
+                    if ((event_2 === null || event_2 === void 0 ? void 0 : event_2.type) === "content_block_delta") {
+                        delta = event_2.delta;
+                        if ((delta === null || delta === void 0 ? void 0 : delta.type) === "text_delta" && delta.text) {
+                            fullText += delta.text;
+                            write({ type: "text", content: delta.text });
+                        }
+                    }
+                }
+                else if (msg.type === "assistant") {
+                    content = (_g = msg.message) === null || _g === void 0 ? void 0 : _g.content;
+                    if (!fullText) {
+                        if (typeof content === "string") {
+                            fullText += content;
+                            write({ type: "text", content: content });
+                        }
+                        else if (Array.isArray(content)) {
+                            for (_i = 0, content_3 = content; _i < content_3.length; _i++) {
+                                block = content_3[_i];
+                                if (block.type === "text" && block.text) {
+                                    fullText += block.text;
+                                    write({ type: "text", content: block.text });
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (msg.type === "result") {
+                    r = msg.result;
+                    if (!fullText && typeof r === "string" && r.trim()) {
+                        fullText = r;
+                        write({ type: "text", content: r });
+                    }
+                    return [3 /*break*/, 8];
+                }
+                else if (msg.type === "error") {
+                    write({ type: "error", message: msg.error || "生成失败" });
+                    return [3 /*break*/, 8];
+                }
+                _h.label = 7;
+            case 7:
+                _b = true;
+                return [3 /*break*/, 5];
+            case 8: return [3 /*break*/, 15];
+            case 9:
+                e_5_1 = _h.sent();
+                e_5 = { error: e_5_1 };
+                return [3 /*break*/, 15];
+            case 10:
+                _h.trys.push([10, , 13, 14]);
+                if (!(!_b && !_c && (_d = stream_4.return))) return [3 /*break*/, 12];
+                return [4 /*yield*/, _d.call(stream_4)];
+            case 11:
+                _h.sent();
+                _h.label = 12;
+            case 12: return [3 /*break*/, 14];
+            case 13:
+                if (e_5) throw e_5.error;
+                return [7 /*endfinally*/];
+            case 14: return [7 /*endfinally*/];
+            case 15:
+                write({ type: "done", fullText: fullText });
+                res.end();
+                return [3 /*break*/, 20];
+            case 16:
+                error_21 = _h.sent();
+                console.error("[promo/generate]", error_21);
+                write({ type: "error", message: (error_21 === null || error_21 === void 0 ? void 0 : error_21.message) || "生成失败" });
+                res.end();
+                return [3 /*break*/, 20];
+            case 17:
+                closed = true;
+                if (!stream) return [3 /*break*/, 19];
+                return [4 /*yield*/, stream.interrupt().catch(function () { return undefined; })];
+            case 18:
+                _h.sent();
+                _h.label = 19;
+            case 19: return [7 /*endfinally*/];
+            case 20: return [2 /*return*/];
+        }
+    });
+}); });
+// 已保存文案：列表
+app.get("/api/promo/copies", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var rows, copies, error_22;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                return [4 /*yield*/, db.getAllPromoCopies()];
+            case 1:
+                rows = _a.sent();
+                copies = rows.map(function (r) { return ({
+                    id: r.id,
+                    title: r.title,
+                    content: r.content,
+                    feedIds: r.feed_ids ? JSON.parse(r.feed_ids) : [],
+                    feedSnapshot: r.feed_snapshot ? JSON.parse(r.feed_snapshot) : [],
+                    favorite: !!r.favorite,
+                    createdAt: r.created_at,
+                }); });
+                res.json({ copies: copies });
+                return [3 /*break*/, 3];
+            case 2:
+                error_22 = _a.sent();
+                res.status(500).json({ error: (error_22 === null || error_22 === void 0 ? void 0 : error_22.message) || "获取文案失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+// 已保存文案：保存
+app.post("/api/promo/copies", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var _a, title, content, feedIds, feedSnapshot, now, item, error_23;
+    return __generator(this, function (_b) {
+        switch (_b.label) {
+            case 0:
+                _b.trys.push([0, 2, , 3]);
+                _a = req.body || {}, title = _a.title, content = _a.content, feedIds = _a.feedIds, feedSnapshot = _a.feedSnapshot;
+                if (!content || !String(content).trim()) {
+                    return [2 /*return*/, res.status(400).json({ error: "文案内容为空" })];
+                }
+                now = new Date().toISOString();
+                item = {
+                    id: uuidv4(),
+                    title: (title && String(title).slice(0, 100)) || "未命名文案",
+                    content: String(content),
+                    feed_ids: Array.isArray(feedIds) ? JSON.stringify(feedIds) : null,
+                    feed_snapshot: feedSnapshot ? JSON.stringify(feedSnapshot) : null,
+                    favorite: 0,
+                    created_at: now,
+                };
+                return [4 /*yield*/, db.createPromoCopy(item)];
+            case 1:
+                _b.sent();
+                res.json({ id: item.id, success: true });
+                return [3 /*break*/, 3];
+            case 2:
+                error_23 = _b.sent();
+                res.status(500).json({ error: (error_23 === null || error_23 === void 0 ? void 0 : error_23.message) || "保存失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+// 已保存文案：切换收藏
+app.patch("/api/promo/copies/:id", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var favorite, error_24;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                favorite = (req.body || {}).favorite;
+                return [4 /*yield*/, db.setPromoCopyFavorite(req.params.id, !!favorite)];
+            case 1:
+                _a.sent();
+                res.json({ success: true });
+                return [3 /*break*/, 3];
+            case 2:
+                error_24 = _a.sent();
+                res.status(500).json({ error: (error_24 === null || error_24 === void 0 ? void 0 : error_24.message) || "更新失败" });
+                return [3 /*break*/, 3];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+// 已保存文案：删除
+app.delete("/api/promo/copies/:id", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
+    var error_25;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                _a.trys.push([0, 2, , 3]);
+                return [4 /*yield*/, db.deletePromoCopy(req.params.id)];
+            case 1:
+                _a.sent();
+                res.json({ success: true });
+                return [3 /*break*/, 3];
+            case 2:
+                error_25 = _a.sent();
+                res.status(500).json({ error: (error_25 === null || error_25 === void 0 ? void 0 : error_25.message) || "删除失败" });
                 return [3 /*break*/, 3];
             case 3: return [2 /*return*/];
         }

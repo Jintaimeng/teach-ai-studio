@@ -108,6 +108,15 @@ export const MODULES: ModuleDef[] = [
     desc: '查看收藏的志愿推荐案例',
   },
   {
+    id: 'promo',
+    label: '推广神器',
+    icon: 'Megaphone',
+    path: '/promo',
+    type: 'page',
+    group: '教学',
+    desc: '基于研bot资讯一键生成宣传文案',
+  },
+  {
     id: 'settings',
     label: '系统设置',
     icon: 'Setting',

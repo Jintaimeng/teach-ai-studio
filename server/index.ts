@@ -19,6 +19,15 @@ import {
   YanbotApiError,
   type SchoolScoreRecord,
 } from "./yanbotClient.js";
+import {
+  ensureMcpReady,
+  queryFeeds,
+  getFeedsByIds,
+  querySchoolScores,
+  listScoreYears,
+  listScoreLevels,
+  type FeedItem,
+} from "./yanbotMcp.js";
 
 const execAsync = promisify(exec);
 
@@ -1709,6 +1718,261 @@ app.post("/api/cases", async (req, res) => {
 app.delete("/api/cases/:id", async (req, res) => {
   try {
     await db.deleteFavoriteCase(req.params.id);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || "删除失败" });
+  }
+});
+
+// ============= 推广神器 API（基于 yanbot MCP 资讯数据） =============
+
+const PROMO_PROMPT = `你是资深的考研/教育行业运营文案写手。请根据用户提供的【研bot 资讯素材】，撰写一段可直接发布到社交媒体或公众号的中文宣传文案。
+
+要求：
+1. 先给出一个有吸引力的标题（单独一行，以"标题："开头）。
+2. 正文条理清晰、语气积极专业，突出资讯中的关键信息与价值点，引导读者关注。
+3. 结尾可附 2~4 个相关话题标签（以 # 开头）。
+4. 严格基于给定素材，不要杜撰院校名称、分数、日期等事实数据；素材信息不足时不要编造。
+5. 直接输出文案正文，不要输出"好的""以下是"等多余说明，也不要使用代码块包裹。`;
+
+function buildPromoMaterial(feeds: FeedItem[]): string {
+  return feeds
+    .map((f, i) => {
+      const source = f.feedMeta?.title ? `（来源：${f.feedMeta.title}）` : "";
+      const date = f.isoDate ? `\n发布时间：${f.isoDate}` : "";
+      const tags = Array.isArray(f.tags) && f.tags.length ? `\n标签：${f.tags.join("、")}` : "";
+      const bodyRaw = f.content || f.contentSnippet || f.summary || "";
+      const body = bodyRaw ? `\n内容：${String(bodyRaw).slice(0, 800)}` : "";
+      const link = f.link ? `\n原文链接：${f.link}` : "";
+      return `【资讯 ${i + 1}】${f.title || "无标题"}${source}${date}${tags}${body}${link}`;
+    })
+    .join("\n\n");
+}
+
+// 资讯列表
+app.get("/api/promo/feeds", async (req, res) => {
+  try {
+    const page = Number(req.query.page) || 1;
+    const pageSize = Math.min(Number(req.query.pageSize) || 20, 100);
+    const keyword = typeof req.query.keyword === "string" ? req.query.keyword : undefined;
+    const data = await queryFeeds({ page, pageSize, keyword });
+    res.json({ list: data.list || [], pagination: data.pagination });
+  } catch (error: any) {
+    console.error("[promo/feeds]", error);
+    res.status(502).json({ error: error?.message || "获取资讯失败" });
+  }
+});
+
+// 数据 tab：考研院校专业历年录取数据（筛选项）
+app.get("/api/promo/scores/meta", async (req, res) => {
+  try {
+    await ensureMcpReady();
+    const [years, levels] = await Promise.all([
+      listScoreYears().catch(() => [] as number[]),
+      listScoreLevels().catch(() => [] as string[]),
+    ]);
+    res.json({ years, levels });
+  } catch (error: any) {
+    console.error("[promo/scores/meta]", error);
+    res.status(502).json({ error: error?.message || "获取筛选项失败" });
+  }
+});
+
+// 数据 tab：考研院校专业历年录取分数线列表
+app.get("/api/promo/scores", async (req, res) => {
+  try {
+    await ensureMcpReady();
+    const q = req.query;
+    const subjectRaw = typeof q.subject === "string" ? q.subject.trim() : "";
+    const params: Parameters<typeof querySchoolScores>[0] = {
+      schoolName: typeof q.schoolName === "string" ? q.schoolName : undefined,
+      year: q.year ? Number(q.year) : undefined,
+      level: typeof q.level === "string" ? q.level : undefined,
+      studyForm: typeof q.studyForm === "string" ? q.studyForm : undefined,
+      minLowestScore: q.minLowestScore ? Number(q.minLowestScore) : undefined,
+      page: q.page ? Number(q.page) : 1,
+      pageSize: Math.min(q.pageSize ? Number(q.pageSize) : 20, 50),
+      sortBy: typeof q.sortBy === "string" ? q.sortBy : "lowestScore",
+      sortOrder: q.sortOrder === "asc" ? "asc" : "desc",
+    };
+    // 专业：6 位数字按代码，否则按名称
+    if (subjectRaw) {
+      if (/^\d{6}$/.test(subjectRaw)) params.subjectCode = subjectRaw;
+      else params.subjectName = subjectRaw;
+    }
+    const data = await querySchoolScores(params);
+    res.json({ list: data.list || [], pagination: data.pagination });
+  } catch (error: any) {
+    console.error("[promo/scores]", error);
+    res.status(502).json({ error: error?.message || "获取录取数据失败" });
+  }
+});
+
+// 一键生成宣传文案（SSE 流式）
+app.post("/api/promo/generate", async (req, res) => {
+  const { feedIds, feedSnapshot, model } = (req.body || {}) as {
+    feedIds?: string[];
+    feedSnapshot?: FeedItem[];
+    model?: string;
+  };
+
+  if (!Array.isArray(feedIds) || feedIds.length === 0) {
+    return res.status(400).json({ error: "请至少选择一条资讯" });
+  }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+
+  let stream: ReturnType<typeof query> | null = null;
+  let closed = false;
+  const write = (obj: unknown) => {
+    if (!closed) res.write(`data: ${JSON.stringify(obj)}\n\n`);
+  };
+
+  try {
+    await ensureMcpReady();
+    let feeds = await getFeedsByIds(feedIds);
+    // 兜底：MCP 未取到内容时用前端传来的快照
+    if ((!feeds || feeds.length === 0) && Array.isArray(feedSnapshot) && feedSnapshot.length) {
+      feeds = feedSnapshot;
+    }
+    if (!feeds || feeds.length === 0) {
+      write({ type: "error", message: "未能获取选中的资讯内容，请重试" });
+      return res.end();
+    }
+
+    const material = buildPromoMaterial(feeds);
+    const selectedModel = model || defaultModel;
+
+    stream = query({
+      prompt: `【研bot 资讯素材】\n\n${material}\n\n请根据以上资讯撰写宣传文案。`,
+      options: {
+        cwd: process.cwd(),
+        model: selectedModel,
+        maxTurns: 1,
+        permissionMode: "bypassPermissions",
+        includePartialMessages: true,
+        systemPrompt: PROMO_PROMPT,
+        env: getSdkEnv(),
+        stderr: (data: string) => console.log(`[promo/generate stderr] ${data.trim()}`),
+      },
+    });
+
+    let fullText = "";
+    write({ type: "init", feedCount: feeds.length, model: selectedModel });
+
+    for await (const msg of stream) {
+      if (closed) break;
+      if ((msg as any).type === "stream_event") {
+        const event = (msg as any).event;
+        if (event?.type === "content_block_delta") {
+          const delta = event.delta;
+          if (delta?.type === "text_delta" && delta.text) {
+            fullText += delta.text;
+            write({ type: "text", content: delta.text });
+          }
+        }
+      } else if ((msg as any).type === "assistant") {
+        // 非流式回退：仅当 partial 未产出任何文本时使用
+        const content = (msg as any).message?.content;
+        if (!fullText) {
+          if (typeof content === "string") {
+            fullText += content;
+            write({ type: "text", content });
+          } else if (Array.isArray(content)) {
+            for (const block of content) {
+              if (block.type === "text" && block.text) {
+                fullText += block.text;
+                write({ type: "text", content: block.text });
+              }
+            }
+          }
+        }
+      } else if ((msg as any).type === "result") {
+        const r = (msg as any).result;
+        if (!fullText && typeof r === "string" && r.trim()) {
+          fullText = r;
+          write({ type: "text", content: r });
+        }
+        break;
+      } else if ((msg as any).type === "error") {
+        write({ type: "error", message: (msg as any).error || "生成失败" });
+        break;
+      }
+    }
+
+    write({ type: "done", fullText });
+    res.end();
+  } catch (error: any) {
+    console.error("[promo/generate]", error);
+    write({ type: "error", message: error?.message || "生成失败" });
+    res.end();
+  } finally {
+    closed = true;
+    if (stream) await stream.interrupt().catch(() => undefined);
+  }
+});
+
+// 已保存文案：列表
+app.get("/api/promo/copies", async (req, res) => {
+  try {
+    const rows = await db.getAllPromoCopies();
+    const copies = rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      content: r.content,
+      feedIds: r.feed_ids ? JSON.parse(r.feed_ids) : [],
+      feedSnapshot: r.feed_snapshot ? JSON.parse(r.feed_snapshot) : [],
+      favorite: !!r.favorite,
+      createdAt: r.created_at,
+    }));
+    res.json({ copies });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || "获取文案失败" });
+  }
+});
+
+// 已保存文案：保存
+app.post("/api/promo/copies", async (req, res) => {
+  try {
+    const { title, content, feedIds, feedSnapshot } = req.body || {};
+    if (!content || !String(content).trim()) {
+      return res.status(400).json({ error: "文案内容为空" });
+    }
+    const now = new Date().toISOString();
+    const item = {
+      id: uuidv4(),
+      title: (title && String(title).slice(0, 100)) || "未命名文案",
+      content: String(content),
+      feed_ids: Array.isArray(feedIds) ? JSON.stringify(feedIds) : null,
+      feed_snapshot: feedSnapshot ? JSON.stringify(feedSnapshot) : null,
+      favorite: 0,
+      created_at: now,
+    };
+    await db.createPromoCopy(item);
+    res.json({ id: item.id, success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || "保存失败" });
+  }
+});
+
+// 已保存文案：切换收藏
+app.patch("/api/promo/copies/:id", async (req, res) => {
+  try {
+    const { favorite } = req.body || {};
+    await db.setPromoCopyFavorite(req.params.id, !!favorite);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || "更新失败" });
+  }
+});
+
+// 已保存文案：删除
+app.delete("/api/promo/copies/:id", async (req, res) => {
+  try {
+    await db.deletePromoCopy(req.params.id);
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error?.message || "删除失败" });

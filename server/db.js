@@ -82,6 +82,8 @@ function initDatabase() {
                     db.run('CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id)');
                     // 收藏案例表（志愿推荐结果）
                     db.run("\n    CREATE TABLE IF NOT EXISTS favorite_cases (\n      id TEXT PRIMARY KEY,\n      title TEXT NOT NULL,\n      candidate_summary TEXT,\n      query_json TEXT NOT NULL,\n      result_json TEXT NOT NULL,\n      note TEXT,\n      created_at TEXT NOT NULL\n    )\n  ");
+                    // 推广文案表（推广神器生成结果）
+                    db.run("\n    CREATE TABLE IF NOT EXISTS promo_copies (\n      id TEXT PRIMARY KEY,\n      title TEXT NOT NULL,\n      content TEXT NOT NULL,\n      feed_ids TEXT,\n      feed_snapshot TEXT,\n      favorite INTEGER DEFAULT 0,\n      created_at TEXT NOT NULL\n    )\n  ");
                     // 数据库迁移：添加 sdk_session_id 列（如果不存在）
                     try {
                         tableInfo = execAsObjects('PRAGMA table_info(sessions)');
@@ -415,4 +417,75 @@ export function deleteFavoriteCase(id) {
         });
     });
 }
-export default { getAllSessions: getAllSessions, getSession: getSession, createSession: createSession, updateSession: updateSession, deleteSession: deleteSession, getMessagesBySession: getMessagesBySession, createMessage: createMessage, updateMessage: updateMessage, deleteMessage: deleteMessage, createMessages: createMessages, clearAllData: clearAllData, getAllFavoriteCases: getAllFavoriteCases, getFavoriteCase: getFavoriteCase, createFavoriteCase: createFavoriteCase, deleteFavoriteCase: deleteFavoriteCase };
+// ============= 推广文案操作 =============
+export function getAllPromoCopies() {
+    return __awaiter(this, void 0, void 0, function () {
+        var rows;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, ensureDb()];
+                case 1:
+                    _a.sent();
+                    rows = execAsObjects('SELECT * FROM promo_copies ORDER BY created_at DESC');
+                    return [2 /*return*/, rows];
+            }
+        });
+    });
+}
+export function getPromoCopy(id) {
+    return __awaiter(this, void 0, void 0, function () {
+        var rows;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, ensureDb()];
+                case 1:
+                    _a.sent();
+                    rows = execAsObjects('SELECT * FROM promo_copies WHERE id = ?', [id]);
+                    return [2 /*return*/, rows[0]];
+            }
+        });
+    });
+}
+export function createPromoCopy(item) {
+    return __awaiter(this, void 0, void 0, function () {
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, ensureDb()];
+                case 1:
+                    _a.sent();
+                    runSql('INSERT INTO promo_copies (id, title, content, feed_ids, feed_snapshot, favorite, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [item.id, item.title, item.content, item.feed_ids, item.feed_snapshot, item.favorite, item.created_at]);
+                    afterWrite();
+                    return [2 /*return*/, item];
+            }
+        });
+    });
+}
+export function setPromoCopyFavorite(id, favorite) {
+    return __awaiter(this, void 0, void 0, function () {
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, ensureDb()];
+                case 1:
+                    _a.sent();
+                    runSql('UPDATE promo_copies SET favorite = ? WHERE id = ?', [favorite ? 1 : 0, id]);
+                    afterWrite();
+                    return [2 /*return*/, true];
+            }
+        });
+    });
+}
+export function deletePromoCopy(id) {
+    return __awaiter(this, void 0, void 0, function () {
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, ensureDb()];
+                case 1:
+                    _a.sent();
+                    runSql('DELETE FROM promo_copies WHERE id = ?', [id]);
+                    afterWrite();
+                    return [2 /*return*/, true];
+            }
+        });
+    });
+}
+export default { getAllSessions: getAllSessions, getSession: getSession, createSession: createSession, updateSession: updateSession, deleteSession: deleteSession, getMessagesBySession: getMessagesBySession, createMessage: createMessage, updateMessage: updateMessage, deleteMessage: deleteMessage, createMessages: createMessages, clearAllData: clearAllData, getAllFavoriteCases: getAllFavoriteCases, getFavoriteCase: getFavoriteCase, createFavoriteCase: createFavoriteCase, deleteFavoriteCase: deleteFavoriteCase, getAllPromoCopies: getAllPromoCopies, getPromoCopy: getPromoCopy, createPromoCopy: createPromoCopy, setPromoCopyFavorite: setPromoCopyFavorite, deletePromoCopy: deletePromoCopy };

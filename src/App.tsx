@@ -11,6 +11,7 @@ import { ZhaixiaoReportPage } from './pages/ZhaixiaoReportPage';
 import { TiaojiReportPage } from './pages/TiaojiReportPage';
 import { RecommendPage } from './pages/RecommendPage';
 import { CaseLibraryPage } from './pages/CaseLibraryPage';
+import { PromoPage } from './pages/PromoPage';
 import { PlaceholderPage } from './components/PlaceholderPage';
 import { SettingsPage } from './components/SettingsPage';
 
@@ -20,6 +21,7 @@ const PAGE_COMPONENTS: Record<string, ComponentType> = {
   'tiaoji-report': TiaojiReportPage,
   'recommend': RecommendPage,
   'cases': CaseLibraryPage,
+  'promo': PromoPage,
 };
 
 /** 系统设置路由：注入 useAgents（localStorage） */
