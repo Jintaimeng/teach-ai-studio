@@ -41,24 +41,25 @@
       align-items: center;
       justify-content: center;
       min-height: 100vh;
+      overflow: hidden;
     }
 
     /* ---- deck / slide ---- */
     .deck {
-      width: 100%;
-      max-width: 1280px;
+      width: 100vw;
+      height: 100vh;
     }
 
     .slide {
       position: relative;
-      width: 100%;
-      aspect-ratio: 16/9;
+      width: 100vw;
+      height: 100vh;
       background: var(--paper);
-      border-radius: 18px;
+      border-radius: 0;
       overflow: hidden;
       display: none;
-      padding: 64px 72px;
-      box-shadow: 0 30px 80px rgba(0, 0, 0, .45);
+      padding: clamp(40px, 6vh, 72px) clamp(48px, 6vw, 100px);
+      box-shadow: none;
     }
 
     .slide.active {
@@ -508,9 +509,9 @@
 
     .contactbar {
       position: absolute;
-      left: 72px;
-      right: 72px;
-      bottom: 40px;
+      left: clamp(48px, 6vw, 100px);
+      right: clamp(48px, 6vw, 100px);
+      bottom: clamp(28px, 4vh, 48px);
       display: flex;
       align-items: center;
       gap: 22px;
